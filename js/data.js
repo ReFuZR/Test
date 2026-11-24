@@ -218,21 +218,62 @@ export const PROP_TYPES = {
   "Points + Assists + Rebounds Milestones": { stats: ["pts", "reb", "ast"], label: "PRA" },
 };
 
-/** Sportsbook player-prop ladders ("N+") plus double/triple-double prices. Duplicates keep the latest. */
+/** Over/under markets ("Total Points 24.5"), posted earlier in the day than the ladders. */
+export const OU_TYPES = {
+  "Total Points": PROP_TYPES["Points Milestones"],
+  "Total Rebounds": PROP_TYPES["Rebounds Milestones"],
+  "Total Assists": PROP_TYPES["Assists Milestones"],
+  "Total 3-Point Field Goals": PROP_TYPES["3-Point Field Goals Milestones"],
+  "Total Points and Rebounds": PROP_TYPES["Points + Rebounds Milestones"],
+  "Total Points and Assists": PROP_TYPES["Points + Assists Milestones"],
+  "Total Assists and Rebounds": PROP_TYPES["Rebounds + Assists Milestones"],
+  "Total Points, Rebounds, and Assists": PROP_TYPES["Points + Assists + Rebounds Milestones"],
+};
+
+const implied = (a) => (a > 0 ? 100 / (a + 100) : -a / (-a + 100));
+
+/**
+ * Player props: ladders ("N+"), over/under lines, and double/triple-double prices.
+ * An over at line 24.5 is stored as threshold 25 ("25+"), an under as side "under" with the same threshold.
+ * ESPN doesn't label over/under sides: each pair is listed over first. Checked against ladders on live data, the
+ * first item matched the over whenever the two prices differed meaningfully; when they're within 2.5% of each other
+ * we can't be sure, so both sides get the lower (safer) payout and a 50/50 fair price.
+ */
 export function parseProps(json) {
   const out = new Map();
+  const put = (p) => out.set(`${p.athleteId}|${p.kind}|${p.side || "over"}|${p.stats.join("+")}|${p.threshold}`, p);
+  const ouPairs = new Map();
   for (const it of arr(json?.items)) {
     const athleteId = /athletes\/(\d+)/.exec(it?.athlete?.$ref || "")?.[1];
     const american = odds(it?.odds?.american?.value);
     if (!athleteId || !Number.isFinite(american)) continue;
     const name = it.type?.name || "";
-    let p = null;
-    if (PROP_TYPES[name]) {
+    if (OU_TYPES[name]) {
+      const line = num(it.odds?.total?.value ?? it.current?.target?.value);
+      if (!Number.isFinite(line) || line <= 0) continue;
+      const k = `${athleteId}|${name}|${line}`;
+      if (!ouPairs.has(k)) ouPairs.set(k, { athleteId, name, line, prices: [], raw: [] });
+      const pair = ouPairs.get(k);
+      const sig = JSON.stringify(it);
+      // A pair is normally 2 items, which may be identical (-110/-110). Beyond 2, drop exact repeats.
+      if (pair.prices.length >= 2 && pair.raw.includes(sig)) continue;
+      pair.prices.push(american); pair.raw.push(sig);
+    } else if (PROP_TYPES[name]) {
       const threshold = num(it.current?.target?.value ?? String(it.odds?.total?.value ?? "").replace("+", ""));
-      if (Number.isFinite(threshold) && threshold > 0) p = { athleteId, kind: "prop", ...PROP_TYPES[name], threshold, american };
-    } else if (/double double/i.test(name)) p = { athleteId, kind: "dd", label: "Double-double", stats: [], threshold: 1, american };
-    else if (/triple double/i.test(name)) p = { athleteId, kind: "td", label: "Triple-double", stats: [], threshold: 1, american };
-    if (p) out.set(`${p.athleteId}|${p.kind}|${p.stats.join("+")}|${p.threshold}`, p);
+      const key = `${athleteId}|prop|over|${PROP_TYPES[name].stats.join("+")}|${threshold}`;
+      if (Number.isFinite(threshold) && threshold > 0 && !out.has(key)) put({ athleteId, kind: "prop", ...PROP_TYPES[name], threshold, american });
+    } else if (/double double/i.test(name)) put({ athleteId, kind: "dd", label: "Double-double", stats: [], threshold: 1, american });
+    else if (/triple double/i.test(name)) put({ athleteId, kind: "td", label: "Triple-double", stats: [], threshold: 1, american });
+  }
+  for (const { athleteId, name, line, prices } of ouPairs.values()) {
+    if (prices.length !== 2) continue;                      // can't tell sides apart without the pair
+    let [over, under] = prices;
+    let fairOver = implied(over) / (implied(over) + implied(under));
+    if (Math.abs(implied(over) - implied(under)) < 0.025) { over = under = Math.min(over, under); fairOver = 0.5; }
+    const threshold = Math.floor(line) + 1;                 // over 24.5 = 25 or more; under 24.5 = 24 or fewer
+    const base = { athleteId, kind: "prop", ...OU_TYPES[name], threshold, line };
+    put({ ...base, american: over, fair: fairOver });        // over replaces a ladder rung at the same threshold
+    put({ ...base, side: "under", american: under, fair: 1 - fairOver });
   }
   return [...out.values()];
 }
@@ -257,5 +298,10 @@ export function parseSummary(json) {
       }
     }
   }
-  return { completed: !!comp.status?.type?.completed, detail: comp.status?.type?.shortDetail || "", home: side(h), away: side(a), players };
+  const statusName = String(comp.status?.type?.name || "");
+  return {
+    completed: !!comp.status?.type?.completed, detail: comp.status?.type?.shortDetail || "",
+    canceled: /POSTPONED|CANCEL|FORFEIT|SUSPENDED/i.test(statusName),   // sportsbooks void these bets
+    home: side(h), away: side(a), players,
+  };
 }

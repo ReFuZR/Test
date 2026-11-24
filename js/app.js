@@ -24,7 +24,8 @@ function cleanLeg(l) {
     stats: Array.isArray(l.stats) ? l.stats.filter((s) => ["pts", "reb", "ast", "tpm", "stl", "blk"].includes(s)) : [],
     threshold: finite(l.threshold) ? l.threshold : undefined,
     label: String(l.label || "Bet").slice(0, 120), game: String(l.game || "").slice(0, 40), start: l.start,
-    american: M.parseAmerican(l.american), pModel: finite(l.pModel) ? l.pModel : 0.5, pBook: finite(l.pBook) ? l.pBook : undefined,
+    // A missing probability stays missing: a made-up 50% would skew the "Is the model honest?" stats
+    american: M.parseAmerican(l.american), pModel: finite(l.pModel) ? l.pModel : undefined, pBook: finite(l.pBook) ? l.pBook : undefined,
     pA: finite(l.pA) ? l.pA : undefined, pB: finite(l.pB) ? l.pB : undefined, verified: typeof l.verified === "boolean" ? l.verified : undefined,
     statLabel: l.statLabel, detail: l.detail && typeof l.detail === "object" ? l.detail : undefined, injury: l.injury,
     result: RESULTS.has(l.result) ? l.result : undefined, actual: l.actual,
@@ -94,29 +95,51 @@ const legIndex = new Map();
 function remember(legs) { for (const l of legs) if (l) legIndex.set(l.id, l); }
 
 function toggleLeg(leg) {
-  if (!leg) return toast("That line isn't available any more. Pull to refresh.", "bad");
+  if (!leg) return toast("That line isn't available any more. Tap the date up top to refresh.", "bad");
   if (inSlip(leg.id)) S.slip = S.slip.filter((l) => l.id !== leg.id);
   else {
-    if (S.slip.length >= 12) return toast("A slip holds up to 12 legs", "bad");
     if (leg.start && validDate(leg.start) && new Date(leg.start) < new Date()) return toast("That game has already started", "bad");
-    // Can't hold both sides of one market
-    S.slip = S.slip.filter((l) => !(l.eventId === leg.eventId && l.kind === leg.kind && !leg.athleteId));
-    S.slip.push(leg); toast(`Added ${leg.label}`);
+    // Can't hold both sides of one market: home/away of a game line, or over/under of the same player line
+    const sameMarket = (l) => l.eventId === leg.eventId && l.kind === leg.kind && (leg.athleteId
+      ? l.athleteId === leg.athleteId && String(l.stats) === String(leg.stats) && l.threshold === leg.threshold && (l.side === "under") !== (leg.side === "under")
+      : true);
+    const replaced = S.slip.filter(sameMarket);
+    if (S.slip.length - replaced.length >= 12) return toast("A slip holds up to 12 legs", "bad");
+    S.slip = S.slip.filter((l) => !sameMarket(l));
+    S.slip.push({ ...leg });   // a copy: editing odds in the slip mustn't change the Props list
+    toast(replaced.length ? `Swapped to ${leg.label}` : `Added ${leg.label}`);
   }
   saveSlip(); render();
 }
 
 // ---------------- data loading ----------------
-async function gamelog(athleteId) {
-  if (S.gamelogs[athleteId]) return S.gamelogs[athleteId];
-  const key = `cp.gl.${athleteId}`, cached = store.get(key, null);
-  if (cached && finite(cached.t) && Array.isArray(cached.rows) && Date.now() - cached.t < 3 * 36e5) return (S.gamelogs[athleteId] = cached.rows);
-  let rows = D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId), 36e5));
-  if (rows.length < 8) {   // early season or rookie: lean on last season too
-    try { rows = rows.concat(D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId, seasonYear() - 1), 864e5)).slice(0, 25)); } catch { /* no history */ }
-  }
-  store.set(key, { t: Date.now(), rows: rows.slice(0, 40) });
-  return (S.gamelogs[athleteId] = rows);
+const inflight = new Map();   // one request per player even when injuries and props ask at once
+function gamelog(athleteId) {
+  if (S.gamelogs[athleteId]) return Promise.resolve(S.gamelogs[athleteId]);
+  if (inflight.has(athleteId)) return inflight.get(athleteId);
+  const job = (async () => {
+    const key = `cp.gl.${athleteId}`, cached = store.get(key, null);
+    if (cached && finite(cached.t) && Array.isArray(cached.rows) && Date.now() - cached.t < 3 * 36e5) return (S.gamelogs[athleteId] = cached.rows);
+    let rows = D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId), 36e5));
+    if (rows.length < 8) {   // early season or rookie: lean on last season too
+      try { rows = rows.concat(D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId, seasonYear() - 1), 864e5)).slice(0, 25)); } catch { /* no history */ }
+    }
+    store.set(key, { t: Date.now(), rows: rows.slice(0, 40) });
+    return (S.gamelogs[athleteId] = rows);
+  })().finally(() => inflight.delete(athleteId));
+  inflight.set(athleteId, job);
+  return job;
+}
+
+/** Drop cached player logs older than a day so phone storage doesn't fill up over a season. */
+function pruneCache() {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (!k.startsWith("cp.gl.")) continue;
+      const v = store.get(k, null);
+      if (!v || !finite(v.t) || Date.now() - v.t > 864e5) localStorage.removeItem(k);
+    }
+  } catch { /* storage blocked */ }
 }
 
 async function loadDay() {
@@ -134,7 +157,10 @@ async function loadDay() {
     S.injuries = D.parseInjuries(inj);
     S.propGame = S.games.find((g) => g.state === "pre")?.id || S.games[0]?.id || null;
     S.loading = false; render();
-    await Promise.all([computeForms(token), computeInjuryImpacts(token)]);
+    // Order matters: the form model's injury charge needs each team's last-10 game list from computeForms
+    await computeForms(token);
+    if (token === S.loadToken) render();
+    await computeInjuryImpacts(token);
     if (token === S.loadToken) render();
   } catch (e) {
     if (token !== S.loadToken) return;
@@ -226,6 +252,7 @@ async function loadProps(eventId, onProgress) {
   if (rh) S.rosters[g.home.id] = Object.fromEntries(Object.entries(D.parseRoster(rh)).map(([k, v]) => [k, { ...v, teamId: v.teamId || g.home.id }]));
   if (ra) S.rosters[g.away.id] = Object.fromEntries(Object.entries(D.parseRoster(ra)).map(([k, v]) => [k, { ...v, teamId: v.teamId || g.away.id }]));
   const props = D.parseProps(propsJson);
+  if (props.length && !S.rosters[g.home.id] && !S.rosters[g.away.id]) throw new D.FetchError("Couldn't load the team rosters to match players to props.", "http");
   const ids = [...new Set(props.map((p) => p.athleteId))];
   let done = 0;
   await D.pool(ids, 6, async (id) => { try { await gamelog(id); } finally { onProgress?.(++done / Math.max(1, ids.length)); } });
@@ -250,15 +277,20 @@ async function loadProps(eventId, onProgress) {
       b = M.perMinuteMultiDouble(rows, pr.kind === "dd" ? 2 : 3);
     }
     if (!a && !b) continue;
+    const under = pr.side === "under";
+    const flip = (p) => (finite(p) ? 1 - p : p);          // models give P(at least threshold); an under is the rest
     const out = injury && /out/i.test(injury.status);
+    const what = pr.kind !== "prop" ? pr.label : finite(pr.line) ? `${under ? "Under" : "Over"} ${pr.line} ${pr.label}` : `${pr.threshold}+ ${pr.label}`;
     const leg = finalize({
-      id: `${eventId}|${pr.kind}|${pr.athleteId}|${pr.stats.join("+") || pr.kind}|${pr.threshold}`, eventId, kind: pr.kind, athleteId: pr.athleteId, teamId: info.teamId,
-      stats: pr.stats, threshold: pr.threshold, statLabel: pr.label, american: pr.american,
-      label: pr.kind === "prop" ? `${info.short} ${pr.threshold}+ ${pr.label}` : `${info.short} ${pr.label}`,
+      id: `${eventId}|${pr.kind}|${pr.athleteId}|${pr.stats.join("+") || pr.kind}|${pr.threshold}|${under ? "u" : "o"}${finite(pr.line) ? pr.line : ""}`,
+      eventId, kind: pr.kind, side: under ? "under" : undefined, line: pr.line, athleteId: pr.athleteId, teamId: info.teamId,
+      stats: pr.stats, threshold: pr.threshold, statLabel: pr.label, american: pr.american, what,
+      label: `${info.short} ${what}`,
       game: `${g.away.abbr} @ ${g.home.abbr}`, start: g.date, pBook: M.impliedProb(pr.american),
-      detail: { mean: a?.mean ?? b?.mean, projMin: b?.projMin, n: a?.n ?? b?.n ?? rows.length, hitSeason: a?.hitSeason, hitL10: a?.hitL10, confidence: a?.confidence || "medium" },
+      detail: { mean: a?.mean ?? b?.mean, projMin: b?.projMin, n: a?.n ?? b?.n ?? rows.length,
+        hitSeason: under ? flip(a?.hitSeason) : a?.hitSeason, hitL10: under ? flip(a?.hitL10) : a?.hitL10, confidence: a?.confidence || "medium" },
       injury: injury?.status || "",
-    }, a?.p, b?.p, M.fairOneSided(pr.american), 0.35);
+    }, under ? flip(a?.p) : a?.p, under ? flip(b?.p) : b?.p, finite(pr.fair) ? pr.fair : M.fairOneSided(pr.american), 0.35);
     if (out) leg.pModel = 0;
     legs.push(leg);
   }
@@ -270,7 +302,9 @@ let grading = false;
 async function gradePending({ quiet = true } = {}) {
   if (grading) return;
   const pending = S.bets.filter((b) => b.status === "pending");
-  const events = [...new Set(pending.flatMap((b) => b.legs.filter((l) => !l.result || l.result === "pending").map((l) => l.eventId)))];
+  // Background checks skip games that haven't tipped off yet; a manual check asks about everything
+  const started = (l) => !quiet || !l.start || !validDate(l.start) || new Date(l.start) <= new Date();
+  const events = [...new Set(pending.flatMap((b) => b.legs.filter((l) => (!l.result || l.result === "pending") && started(l)).map((l) => l.eventId)))];
   if (!events.length) { if (!quiet) toast("Nothing waiting on results"); return; }
   grading = true;
   try {
@@ -283,7 +317,7 @@ async function gradePending({ quiet = true } = {}) {
         const res = results[l.eventId];
         const r = M.gradeLeg(l, res);
         if (r !== "pending") { l.result = r; changed++; }
-        if (res?.completed && l.athleteId) {
+        if (res?.completed && !res.canceled && l.athleteId) {
           const p = res.players[l.athleteId];
           if (p && !p.dnp) l.actual = l.kind === "prop" ? l.stats.reduce((s, k) => s + (p[k] || 0), 0) : `${p.pts}/${p.reb}/${p.ast}`;
         }
@@ -430,7 +464,7 @@ async function renderProps() {
     const firstProp = ls.find((l) => l.kind === "prop");
     const vals = firstProp ? l10.map((r) => firstProp.stats.reduce((s, k) => s + (r[k] || 0), 0)) : [];
     const maxV = Math.max(1, ...vals);
-    const spark = firstProp && vals.length ? `<div class="spark-row"><div class="spark" role="img" aria-label="Last ${vals.length} games of ${esc(firstProp.statLabel)}">${vals.map((v) => `<i class="${v >= firstProp.threshold ? "hit" : ""}" style="height:${Math.max(10, (v / maxV) * 100)}%"></i>`).join("")}</div><span class="small muted">last ${vals.length} · ${esc(firstProp.statLabel)} vs ${firstProp.threshold}</span></div>` : "";
+    const spark = firstProp && vals.length ? `<div class="spark-row"><div class="spark" role="img" aria-label="Last ${vals.length} games of ${esc(firstProp.statLabel)}">${vals.map((v) => `<i class="${(v >= firstProp.threshold) !== (firstProp.side === "under") ? "hit" : ""}" style="height:${Math.max(10, (v / maxV) * 100)}%"></i>`).join("")}</div><span class="small muted">last ${vals.length} · ${esc(firstProp.what || firstProp.statLabel)}</span></div>` : "";
     const teammatesOut = (S.injuries[info.teamId] || []).filter((p) => /out/i.test(p.status) && p.athleteId !== aid).map((p) => lastName(p.name));
     const l10r = rows.slice(0, 10);
     return `<article class="card player">
@@ -441,7 +475,7 @@ async function renderProps() {
       ${spark}
       ${teammatesOut.length ? `<div class="small muted">Teammates out: ${esc(teammatesOut.join(", "))}</div>` : ""}
       <div class="rungs">${ls.map((l) => `
-        <div class="rung"><div class="what"><b>${l.kind === "prop" ? `${l.threshold}+ ${esc(l.statLabel)}` : esc(l.statLabel)}</b>
+        <div class="rung"><div class="what"><b>${esc(l.what || l.statLabel)}</b>
           <div class="small muted">${finite(l.detail?.hitL10) ? `L10 ${pct(l.detail.hitL10)} · ` : ""}${finite(l.detail?.mean) ? `proj ${l.detail.mean.toFixed(1)}` : ""}${l.detail?.confidence === "low" ? " · small sample" : ""}</div>
           <div class="chk-row">${checkChip(l)}</div></div>
           <div class="od num">${M.fmtAmerican(l.american)}</div>
@@ -486,6 +520,8 @@ function renderSlip() {
   if (math.sameGame) warn.push("Same-game legs are often correlated, so the real odds differ from the multiplied price. Books price same-game parlays differently.");
   if (legs.some((l) => l.verified === false)) warn.push("Some legs are Split: the two algorithms disagree, so their % is less reliable.");
   if (legs.some((l) => l.detail?.confidence === "low")) warn.push("Some legs rest on only a few games.");
+  const perPlayer = legs.filter((l) => l.athleteId).reduce((m, l) => m.set(l.athleteId, (m.get(l.athleteId) || 0) + 1), new Map());
+  if ([...perPlayer.values()].some((n) => n > 1)) warn.push("More than one leg on the same player: those legs rise and fall together, so the real hit chance is not the multiplied one.");
   if (legs.some((l) => l.start && validDate(l.start) && new Date(l.start) < new Date())) warn.push("A game in this slip has already started.");
   const evCls = (x) => (x >= 0 ? "pos" : "neg");
   const multi = legs.length > 1;
@@ -518,18 +554,22 @@ function renderSlip() {
 }
 
 async function buildSuggestions() {
+  const token = S.loadToken;
   S.building = 0; S.suggestions = null; S.buildNote = ""; render();
   try {
-    const upcoming = S.games.filter((g) => g.state === "pre");
+    if (S.loading) throw new Error("Games are still loading. Try again in a moment.");
+    const upcoming = S.games.filter((g) => g.state === "pre" && (!validDate(g.date) || new Date(g.date) > new Date()));
     let cands = [];
     if (S.scope !== "props") for (const g of upcoming) cands.push(...Object.values(gameLegs(g)));
     if (S.scope !== "lines") {
       let done = 0;
       for (const g of upcoming) {
         try { cands.push(...(await loadProps(g.id))); } catch { /* game without props */ }
+        if (token !== S.loadToken) return;                 // day changed mid-scan: drop stale results
         S.building = ++done / Math.max(1, upcoming.length); if (S.tab === "slip") render();
       }
     }
+    if (token !== S.loadToken) return;
     cands = cands.filter((l) => l.pModel > 0 && !(l.injury && /out|doubt/i.test(l.injury)) && l.american >= -500 && M.toDecimal(l.american) < 6);
     remember(cands);
     const risk = RISK[S.risk];
@@ -656,13 +696,13 @@ document.addEventListener("click", (e) => {
   if (d.news) { S.newsFilter = d.news; return render(); }
   if (d.remove !== undefined) { S.slip.splice(Number(d.remove), 1); return render(); }
   if (d.save) return saveBet(d.save);
-  if (d.use !== undefined) { const s = S.suggestions?.[Number(d.use)]; if (!s) return; S.slip = s.legs.slice(); toast("Parlay loaded into slip", "good"); window.scrollTo(0, 0); return render(); }
+  if (d.use !== undefined) { const s = S.suggestions?.[Number(d.use)]; if (!s) return; S.slip = s.legs.map((l) => ({ ...l })); toast("Parlay loaded into slip", "good"); window.scrollTo(0, 0); return render(); }
   if (d.del) {
     if (S.confirmDel !== d.del) { S.confirmDel = d.del; return render(); }
     S.bets = S.bets.filter((b) => b.id !== d.del); S.confirmDel = null; saveBets(); return render();
   }
   switch (d.act) {
-    case "reload": D.clearCache(); return loadDay();
+    case "reload": D.clearCache(); S.transactions = null; S.rosters = {}; return loadDay();
     case "retryProps": delete S.propLegs[S.propGame]; return render();
     case "clear": S.slip = []; return render();
     case "build": return buildSuggestions();
@@ -670,11 +710,16 @@ document.addEventListener("click", (e) => {
     case "export": {
       if (!S.bets.length) return toast("No bets to back up yet");
       const text = JSON.stringify({ app: "courtside-parlays", v: 2, bets: S.bets }, null, 1);
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
-      a.download = `parlay-tracker-${ymd(new Date())}.json`; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-      return toast("Backup saved", "good");
+      const name = `parlay-tracker-${ymd(new Date())}.json`;
+      // Phones (especially an iPhone home-screen app) often ignore download links; the share sheet works there
+      const file = typeof File === "function" ? new File([text], name, { type: "application/json" }) : null;
+      if (file && navigator.canShare?.({ files: [file] })) {
+        navigator.share({ files: [file], title: "Parlay tracker backup" })
+          .then(() => toast("Backup shared", "good"))
+          .catch((err) => { if (err?.name !== "AbortError") downloadBackup(text, name); });
+        return;
+      }
+      return downloadBackup(text, name);
     }
   }
 });
@@ -718,9 +763,40 @@ document.addEventListener("change", (e) => {
   }
 });
 
+function downloadBackup(text, name) {
+  try {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast("Backup saved", "good");
+  } catch { toast("This browser blocked the download. Try from Safari or Chrome.", "bad"); }
+}
+
 $("#prevDay").onclick = () => { if (S.dayOffset > -30) { S.dayOffset--; loadDay(); } };
 $("#nextDay").onclick = () => { if (S.dayOffset < 30) { S.dayOffset++; loadDay(); } };
-$("#dayLabel").onclick = () => { if (S.dayOffset) { S.dayOffset = 0; loadDay(); } };
+// Tapping the date jumps back to today, or refreshes today's data
+$("#dayLabel").onclick = () => { if (S.dayOffset) S.dayOffset = 0; else { D.clearCache(); S.transactions = null; toast("Refreshing…"); } loadDay(); };
+
+/** Keep live scores and lines current while the Games tab is open, without resetting props or the slip. */
+let refreshing = false;
+async function refreshScores() {
+  if (refreshing || S.loading || S.error || S.tab !== "games" || document.visibilityState !== "visible") return;
+  if (!S.games.some((g) => g.state === "in" || (g.state === "pre" && validDate(g.date) && new Date(g.date) - Date.now() < 2 * 36e5))) return;
+  refreshing = true;
+  const token = S.loadToken;
+  try {
+    const games = D.parseScoreboard(await D.getJSON(D.URLS.scoreboard(ymd(dayDate())), 30_000)).sort((a, b) => new Date(a.date) - new Date(b.date));
+    if (token === S.loadToken && games.length) { S.games = games; if (S.tab === "games") render(); }
+  } catch { /* keep what we have */ } finally { refreshing = false; }
+}
+
+/** Slip legs for games that started long ago can't be bet any more. */
+function pruneSlip() {
+  const before = S.slip.length;
+  S.slip = S.slip.filter((l) => !l.start || !validDate(l.start) || Date.now() - new Date(l.start) < 6 * 36e5);
+  if (S.slip.length < before) toast(`Removed ${before - S.slip.length} old leg${before - S.slip.length > 1 ? "s" : ""} from your slip`);
+}
 
 // Offline banner + background refresh
 function netStatus() { const b = $("#offline"); if (b) b.hidden = navigator.onLine !== false; }
@@ -728,10 +804,13 @@ window.addEventListener("online", () => { netStatus(); if (S.error) loadDay(); }
 window.addEventListener("offline", netStatus);
 window.addEventListener("unhandledrejection", (e) => { console.error(e.reason); e.preventDefault?.(); });
 setInterval(() => { if (document.visibilityState === "visible") gradePending(); }, 120_000);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") gradePending(); });
+setInterval(refreshScores, 60_000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { gradePending(); refreshScores(); } });
 
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 
 netStatus();
+pruneCache();
+pruneSlip();
 saveSlip();
 loadDay().then(() => gradePending());

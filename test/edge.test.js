@@ -288,6 +288,88 @@ describe("parsers never throw on junk", () => {
   });
 });
 
+describe("over/under player props (fix: were ignored, so most games showed no props)", () => {
+  const item = (ath, type, line, odds) => ({ athlete: { $ref: `x/athletes/${ath}?y` }, type: { name: type }, odds: { american: { value: String(odds) }, total: { value: String(line) } }, current: { target: { value: line } } });
+  test("a pair becomes an over and an under; first listed is the over", () => {
+    const p = D.parseProps({ items: [item(1, "Total Points", 24.5, -140), item(1, "Total Points", 24.5, 110)] });
+    const over = p.find((x) => !x.side), under = p.find((x) => x.side === "under");
+    assert.equal(over.threshold, 25); assert.equal(over.line, 24.5); assert.equal(over.american, -140);
+    assert.equal(under.american, 110); assert.ok(over.fair > 0.5); near(over.fair + under.fair, 1, 1e-9);
+  });
+  test("near-equal prices get the safer payout and a 50/50 fair price", () => {
+    const p = D.parseProps({ items: [item(1, "Total Rebounds", 6.5, -112), item(1, "Total Rebounds", 6.5, -117)] });
+    assert.ok(p.every((x) => x.american === -117 && x.fair === 0.5));
+  });
+  test("a lone side (no pair) is skipped rather than guessed", () => {
+    assert.deepEqual(D.parseProps({ items: [item(1, "Total Assists", 4.5, -110)] }), []);
+  });
+  test("the over/under line replaces a ladder rung at the same number", () => {
+    const ladder = { ...item(1, "Points Milestones", 25, 120), current: { target: { value: 25 } } };
+    const p = D.parseProps({ items: [ladder, item(1, "Total Points", 24.5, -110), item(1, "Total Points", 24.5, -110)] });
+    assert.equal(p.filter((x) => x.threshold === 25 && !x.side).length, 1);
+    assert.equal(p.find((x) => x.threshold === 25 && !x.side).line, 24.5);
+  });
+  test("real ESPN over/under-only game parses", () => {
+    const p = D.parseProps(fx("props_ou.json"));
+    assert.ok(p.length >= 10);
+    assert.equal(p.filter((x) => x.side === "under").length, p.filter((x) => !x.side).length);
+    assert.ok(p.every((x) => Number.isFinite(x.line) && x.threshold === Math.floor(x.line) + 1));
+  });
+  test("grading unders and whole-number lines", () => {
+    const res = { completed: true, home: { score: 1 }, away: { score: 0 }, players: { a: { dnp: false, pts: 25 } } };
+    const leg = (o) => ({ kind: "prop", athleteId: "a", stats: ["pts"], ...o });
+    assert.equal(M.gradeLeg(leg({ line: 24.5, threshold: 25 }), res), "win");
+    assert.equal(M.gradeLeg(leg({ line: 24.5, threshold: 25, side: "under" }), res), "loss");
+    assert.equal(M.gradeLeg(leg({ line: 25.5, threshold: 26, side: "under" }), res), "win");
+    assert.equal(M.gradeLeg(leg({ line: 25, threshold: 26 }), res), "push");
+    assert.equal(M.gradeLeg(leg({ line: 25, threshold: 26, side: "under" }), res), "push");
+    assert.equal(M.gradeLeg(leg({ threshold: 30, side: "under" }), res), "win");
+  });
+});
+
+describe("postponed and canceled games (fix: bets stayed pending forever)", () => {
+  test("summary flags them and every leg voids", () => {
+    const s = fx("summary.json");
+    s.header.competitions[0].status.type = { name: "STATUS_POSTPONED", completed: false, shortDetail: "Postponed" };
+    const r = D.parseSummary(s);
+    assert.equal(r.canceled, true);
+    assert.equal(M.gradeLeg({ kind: "ml", side: "home" }, r), "void");
+    assert.equal(M.gradeLeg({ kind: "prop", athleteId: "1", stats: ["pts"], threshold: 5 }, r), "void");
+    assert.equal(M.settleBet({ type: "parlay", stake: 10, legs: [{ american: 100, result: "void" }] }).status, "push");
+    assert.equal(D.parseSummary(fx("summary.json")).canceled, false);
+  });
+});
+
+describe("parlay double-check obeys the same rules (fix: greedy could stack 3 legs from one game)", () => {
+  test("greedy never takes more than 2 legs from one game", () => {
+    const legs = [1, 2, 3].map((i) => ({ id: `a${i}`, eventId: "g1", athleteId: `p${i}`, pModel: 0.9, american: -150 }))
+      .concat([{ id: "b", eventId: "g2", athleteId: "q", pModel: 0.6, american: -150 }]);
+    const g = M.greedyParlay(legs, 3, -1000);
+    assert.ok(g, "found one");
+    assert.ok(g.legs.filter((l) => l.eventId === "g1").length <= 2);
+  });
+  test("one game full of near-locks doesn't crowd out bigger parlays (found on live data)", () => {
+    const locks = [...Array(30)].map((_, i) => ({ id: `l${i}`, eventId: "g1", athleteId: `p${i}`, pModel: 0.9, american: -300, verified: true }));
+    const others = ["g2", "g3", "g4"].map((g, i) => ({ id: `o${i}`, eventId: g, pModel: 0.55, american: -110, verified: true }));
+    const out = M.suggestParlays(locks.concat(others), { sizes: [3, 4], minAmerican: 250 });
+    assert.ok(out.length >= 1, "a 3-4 leg parlay paying +250 exists and must be found");
+    assert.ok(out.every((s) => s.legs.filter((l) => l.eventId === "g1").length <= 2));
+  });
+  test("greedy ignores legs below 30%, like the main search", () => {
+    assert.equal(M.greedyParlay([{ eventId: "1", pModel: 0.2, american: 300 }, { eventId: "2", pModel: 0.25, american: 300 }], 2), null);
+  });
+});
+
+describe("every shipped file parses (fix: a syntax slip once blanked the whole app)", () => {
+  test("node --check passes on all app files", async () => {
+    const { spawnSync } = await import("node:child_process");
+    for (const f of ["js/app.js", "js/data.js", "js/model.js", "sw.js"]) {
+      const r = spawnSync(process.execPath, ["--check", new URL(`../${f}`, import.meta.url).pathname], { encoding: "utf8" });
+      assert.equal(r.status, 0, `${f}: ${r.stderr}`);
+    }
+  });
+});
+
 describe("network wrapper", () => {
   const url = (k) => `https://example.test/${k}/thing?x=1`;
   test("HTTP errors, 404s, bad JSON, timeouts and offline all become readable errors", async () => {

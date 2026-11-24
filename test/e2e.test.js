@@ -215,6 +215,102 @@ describe("saved data and backups", opts, () => {
   }));
 });
 
+describe("regressions for bugs found in review", opts, () => {
+  const ouOnly = (u) => (u.includes("propBets") ? (u.includes("401909315") ? fixture("props_ou.json") : { items: [] }) : undefined);
+  const openBosWsh = async (page) => {
+    await gamesReady(page);
+    await page.click('[data-props="401909315"]');
+    await page.waitForSelector(".player", { timeout: 30_000 });
+  };
+
+  test("games with only over/under props now show Over and Under picks", () => withApp({ espn: ouOnly }, async ({ page }) => {
+    await openBosWsh(page);
+    const labels = await page.$$eval(".rung .what b", (e) => e.map((x) => x.textContent));
+    assert.ok(labels.some((t) => t.startsWith("Over ")), labels.join());
+    assert.ok(labels.some((t) => t.startsWith("Under ")), labels.join());
+    assert.doesNotMatch(await page.textContent("main"), /NaN|undefined/);
+  }));
+
+  test("over and under of the same line swap instead of stacking", () => withApp({ espn: ouOnly }, async ({ page }) => {
+    await openBosWsh(page);
+    const stat = await page.$eval("#propStat option:nth-child(2)", (o) => o.value);
+    await page.selectOption("#propStat", stat);             // one stat: both sides of each line are listed
+    await page.waitForSelector(".add[data-leg*='|o']");
+    const over = await page.$eval(".add[data-leg*='|o']", (b) => b.dataset.leg);
+    const under = over.replace(/\|o([\d.]+)$/, "|u$1");
+    await page.click(`[data-leg="${over}"]`);
+    await page.click(`[data-leg="${under}"]`);
+    assert.match(await toastText(page), /Swapped/);
+    assert.equal(await page.textContent("#slipCount"), "1");
+  }));
+
+  test("editing odds in the slip doesn't change the Props list", () => withApp({}, async ({ page }) => {
+    await gamesReady(page);
+    await page.click("[data-props]");
+    await page.waitForSelector(".player", { timeout: 30_000 });
+    const before = await page.textContent(".rung .od");
+    await page.click(".add[data-leg]");
+    await page.click("[data-tab=slip]");
+    await page.fill("#odds-0", "+999"); await page.locator("#odds-0").blur();
+    await page.waitForFunction(() => document.querySelector("#odds-0").value === "+999");
+    await page.click("[data-tab=props]");
+    await page.waitForSelector(".player");
+    assert.equal(await page.textContent(".rung .od"), before);
+  }));
+
+  test("postponed game voids the bet", () => withApp({
+    storage: { "cp.bets": [pendingBet()] },
+    espn: (u) => { if (!u.includes("/summary")) return; const s = fixture("summary.json"); s.header.competitions[0].status.type = { name: "STATUS_POSTPONED", completed: false }; return s; },
+  }, async ({ page }) => {
+    await page.click("[data-tab=tracker]");
+    await page.waitForSelector(".pill.push", { timeout: 15_000 });
+  }));
+
+  test("background grading doesn't poll games that haven't started", () => withApp({
+    storage: { "cp.bets": [pendingBet({ start: new Date(Date.now() + 5 * 36e5).toISOString() })] },
+  }, async ({ page, calls }) => {
+    await gamesReady(page);
+    await page.click("[data-tab=tracker]");
+    await page.waitForTimeout(800);
+    assert.equal(calls.filter((u) => u.includes("/summary")).length, 0);
+    await page.click("[data-act=grade]");                   // a manual check still asks
+    await page.waitForTimeout(800);
+    assert.ok(calls.some((u) => u.includes("/summary")));
+  }));
+
+  test("slip legs from games long gone are cleared on open", () => withApp({
+    storage: { "cp.slip": [{ ...pendingBet().legs[0], start: new Date(Date.now() - 2 * 864e5).toISOString() }] },
+  }, async ({ page }) => {
+    assert.match(await toastText(page), /Removed 1 old leg/);
+    assert.equal(await page.isHidden("#slipCount"), true);
+  }));
+
+  test("rosters down: props explain why instead of saying none are posted", () => withApp({ espn: (u) => (u.includes("/roster") ? { status: 500, body: "" } : undefined) }, async ({ page }) => {
+    await gamesReady(page);
+    await page.click("[data-props]");
+    await page.waitForSelector(".card.empty", { timeout: 30_000 });
+    assert.match(await page.textContent(".card.empty"), /rosters/);
+  }));
+
+  test("tapping Today refreshes the data", () => withApp({}, async ({ page, calls }) => {
+    await gamesReady(page);
+    const n = calls.filter(isScoreboard).length;
+    await page.click("#dayLabel");
+    await gamesReady(page);
+    assert.ok(calls.filter(isScoreboard).length > n);
+  }));
+
+  test("several legs on one player get a correlation warning", () => withApp({}, async ({ page }) => {
+    await gamesReady(page);
+    await page.click("[data-props]");
+    await page.waitForSelector(".player .add[data-leg]", { timeout: 30_000 });
+    const adds = await page.$$(".player:first-of-type .add[data-leg]");
+    await adds[0].click(); await (await page.$$(".player:first-of-type .add[data-leg]"))[1].click();
+    await page.click("[data-tab=slip]");
+    await page.waitForSelector("text=same player");
+  }));
+});
+
 describe("user mistakes on the slip", opts, () => {
   async function slipWithLegs(page, n = 2) {
     await gamesReady(page);

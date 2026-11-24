@@ -20,7 +20,7 @@ It then opens full-screen like a normal app. There's no server and no account; i
 | Tab | What it does |
 |---|---|
 | **Games** | Every game with DraftKings moneyline, spread and total, the model's % for each side, a projected score, and each team's injuries with an estimated point impact. Tap a price to add it to your slip. |
-| **Props** | Player prop ladders (Points, Rebounds, Assists, 3-Pointers, combos like PRA, double-doubles), each with the model %, the book's %, last-10 / season hit rates, and a last-10 bar chart. Each pick shows ✓ Verified or Split. Sort by *Likely*, *Verified* or *Vs book*. |
+| **Props** | Player over/unders (posted early in the day) and prop ladders like "25+ points" (Points, Rebounds, Assists, 3-Pointers, combos like PRA, double-doubles), each with the model %, the book's %, last-10 / season hit rates, and a last-10 bar chart. Each pick shows ✓ Verified or Split. Sort by *Likely*, *Verified* or *Vs book*. |
 | **Slip** | Your legs, editable odds (match your book's price), and **Parlay vs Straights**: payout, hit chance and expected value for each. **Auto-parlay** scans the whole slate and builds the most likely 2-5 leg parlays that still pay at least +100 (Safer), +250 (Balanced) or +600 (Long shot). |
 | **Tracker** | Bets you saved, graded automatically from ESPN box scores: record, profit, ROI, leg hit rate, parlays vs straights, hit rate by bet type, and an **"Is the model honest?"** table comparing predicted % with how often legs actually hit. Back up / Restore saves your history to a file. |
 | **Injuries** | The injury report (all teams or just today's slate) plus trades and roster moves. |
@@ -44,7 +44,7 @@ The **Tracker's Algorithm check** scores A, B and the final blend on your graded
 
 **Parlays.** Hit chance is the product of the legs' chances. That assumes the legs are independent, which isn't true for legs from the same game, so the app warns you about those. **Auto-parlay double-checks its own search:** after an exhaustive search for the most likely combo, a second, independent greedy search runs on the same legs, and if it ever finds a likelier parlay, that one is shown instead.
 
-**Grading.** Moneyline, spread and total legs grade from the final score. Player legs grade from the box score. A player who doesn't play is voided, and that leg drops out of a parlay (the usual sportsbook rule).
+**Grading.** Moneyline, spread and total legs grade from the final score. Player legs grade from the box score. A player who doesn't play is voided, and that leg drops out of a parlay (the usual sportsbook rule). Postponed or canceled games void every leg on them. An over/under that lands exactly on a whole-number line is a push.
 
 ## Files
 
@@ -59,7 +59,7 @@ test/                     tests (run: npm test), using real saved ESPN responses
 
 ## Tests
 
-`npm test` runs 90 tests (the browser ones need Playwright):
+`npm test` runs 110 tests (the browser ones need Playwright):
 
 - **model.test.js:** odds math, both algorithms, parlays, grading and parsers against real ESPN data.
 - **edge.test.js:** every bad input we could think of: invalid odds strings, empty and garbage ESPN responses, missing teams, negative or NaN stats, ties and pushes, DNPs, timeouts, offline with stale cache, HTTP errors. It also checks on 40 random slates that the parlay search is never beaten by the second search.

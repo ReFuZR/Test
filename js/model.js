@@ -265,10 +265,18 @@ function* combos(arr, k, start = 0, acc = []) {
 export function suggestParlays(candidates, { sizes = [2, 3, 4], minAmerican = 100, pool = 24, maxSameGame = 2, verifiedOnly = false } = {}) {
   const minDec = toDecimal(minAmerican);
   const score = (c) => c.pModel * (1 + Math.max(0, c.pModel - impliedProb(c.american)));
-  const top = (candidates || [])
+  const ranked = (candidates || [])
     .filter((c) => c && finite(c.pModel) && finite(toDecimal(c.american)) && c.pModel > 0.3 && (!verifiedOnly || c.verified))
-    .sort((a, b) => score(b) - score(a))
-    .slice(0, pool);
+    .sort((a, b) => score(b) - score(a));
+  // Keep the pool spread across games: one game with many near-locks would otherwise fill it, and the
+  // per-game cap would then leave no room for 3+ leg parlays.
+  const perGameCap = Math.max(maxSameGame + 2, Math.ceil(pool / 4));
+  const seen = {}, top = [];
+  for (const c of ranked) {
+    if ((seen[c.eventId] = (seen[c.eventId] || 0) + 1) > perGameCap) continue;
+    top.push(c);
+    if (top.length === pool) break;
+  }
   const out = [];
   for (const k of sizes) {
     if (k > top.length) continue;
@@ -293,13 +301,15 @@ export function suggestParlays(candidates, { sizes = [2, 3, 4], minAmerican = 10
  * Independent check of the parlay search: greedy build (take the likeliest leg that fits, repeat).
  * If greedy finds a combo the exhaustive search missed that is more likely, the search is wrong.
  */
-export function greedyParlay(candidates, size, minAmerican = 100) {
-  const pool = (candidates || []).filter((c) => c && finite(c.pModel) && finite(toDecimal(c.american))).sort((a, b) => b.pModel - a.pModel);
+export function greedyParlay(candidates, size, minAmerican = 100, { maxSameGame = 2 } = {}) {
+  // Same rules as suggestParlays, or the "double-check" could win only by breaking them
+  const pool = (candidates || []).filter((c) => c && finite(c.pModel) && c.pModel > 0.3 && finite(toDecimal(c.american))).sort((a, b) => b.pModel - a.pModel);
   const pick = [];
   for (const c of pool) {
     if (pick.length === size) break;
     if (c.athleteId && pick.some((l) => l.athleteId === c.athleteId)) continue;
     if (!c.athleteId && pick.some((l) => !l.athleteId && l.eventId === c.eventId)) continue;
+    if (pick.filter((l) => l.eventId === c.eventId).length >= maxSameGame) continue;
     pick.push(c);
   }
   if (pick.length < size) return null;
@@ -313,7 +323,9 @@ export function greedyParlay(candidates, size, minAmerican = 100) {
  * result: {completed, home:{id,score}, away:{id,score}, players:{[athleteId]: {pts,reb,ast,tpm,stl,blk,dnp}}}
  */
 export function gradeLeg(leg, result) {
-  if (!leg || !result || !result.completed) return "pending";
+  if (!leg || !result) return "pending";
+  if (result.canceled) return "void";
+  if (!result.completed) return "pending";
   const hs = result.home?.score, as = result.away?.score;
   const scored = finite(hs) && finite(as);
   const forSide = (side) => (side === "home" ? hs - as : as - hs);
@@ -336,7 +348,14 @@ export function gradeLeg(leg, result) {
       if (leg.kind === "prop") {
         const vals = (leg.stats || []).map((k) => p[k]);
         if (!vals.length || vals.some((v) => !finite(v))) return "void";
-        return vals.reduce((s, v) => s + v, 0) >= leg.threshold ? "win" : "loss";
+        const got = vals.reduce((s, v) => s + v, 0);
+        if (finite(leg.line)) {                               // over/under market: exact line is a push
+          if (got === leg.line) return "push";
+          return (leg.side === "under") === (got < leg.line) ? "win" : "loss";
+        }
+        if (!finite(leg.threshold)) return "void";
+        const over = got >= leg.threshold;                    // ladder: "N+"
+        return (leg.side === "under" ? !over : over) ? "win" : "loss";
       }
       const cats = ["pts", "reb", "ast", "stl", "blk"].filter((k) => p[k] >= 10).length;
       return cats >= (leg.kind === "dd" ? 2 : 3) ? "win" : "loss";
