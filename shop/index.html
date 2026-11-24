@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Loomline — Everyday Basics</title>
+<meta name="description" content="Heavyweight tees, fleece and everyday basics. Free shipping on orders over $75.">
+<meta property="og:title" content="Loomline — Everyday Basics">
+<meta property="og:description" content="Heavyweight tees, fleece and everyday basics.">
+<meta name="theme-color" content="#f6f3ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141311" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="shop.css">
+<script src="config.js"></script>
+<script type="module" src="shop.js"></script>
+</head>
+<body>
+<div class="announce" id="announce">Free shipping on orders over $75</div>
+<header class="top">
+  <a class="logo" href="./">Loomline</a>
+  <button class="cart-btn" id="cartBtn" aria-label="Open cart">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-1.2 11.2a2 2 0 0 1-2 1.8H8.2a2 2 0 0 1-2-1.8z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>
+    <span>Cart</span><b id="cartCount">0</b>
+  </button>
+</header>
+
+<div class="notice" id="notice" role="status" hidden></div>
+
+<main>
+  <section class="hero">
+    <p class="eyebrow">Everyday basics</p>
+    <h1>Heavy fabrics. Easy fits.<br>Made to be worn out.</h1>
+    <p class="lede">Tees, fleece and accessories in a tight palette of colours that all work together.</p>
+    <a class="btn" href="#shop">Shop the collection</a>
+  </section>
+
+  <section id="shop" class="shop" aria-label="Products">
+    <div class="toolbar">
+      <div class="chips" id="chips" role="tablist" aria-label="Category"></div>
+      <label class="sort">Sort
+        <select id="sort">
+          <option value="featured">Featured</option>
+          <option value="low">Price, low to high</option>
+          <option value="high">Price, high to low</option>
+        </select>
+      </label>
+    </div>
+    <div class="grid" id="grid" aria-live="polite"><p class="empty">Loading…</p></div>
+  </section>
+
+  <section class="promises">
+    <div><h3>Free shipping over $75</h3><p>Flat rate below that. Tracked on every order.</p></div>
+    <div><h3>30-day returns</h3><p>Unworn and unwashed? Send it back for a refund.</p></div>
+    <div><h3>Secure checkout</h3><p>Payments by Stripe. We never see your card.</p></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="logo">Loomline</div>
+  <nav>
+    <button data-policy="shipping">Shipping</button>
+    <button data-policy="returns">Returns</button>
+    <button data-policy="privacy">Privacy</button>
+    <button data-policy="contact">Contact</button>
+  </nav>
+  <p class="small" id="copyright"></p>
+</footer>
+
+<dialog id="product" class="sheet product" aria-labelledby="pName">
+  <button class="x" data-close aria-label="Close">×</button>
+  <div class="p-wrap">
+    <div class="p-art" id="pArt"></div>
+    <div class="p-info">
+      <p class="eyebrow" id="pCat"></p>
+      <h2 id="pName"></h2>
+      <p class="price" id="pPrice"></p>
+      <p id="pDesc"></p>
+      <fieldset><legend>Colour: <span id="pColorName"></span></legend><div class="swatches big" id="pColors"></div></fieldset>
+      <fieldset id="pSizeSet"><legend>Size</legend><div class="sizes" id="pSizes"></div></fieldset>
+      <div class="add-row">
+        <div class="qty" aria-label="Quantity"><button id="qMinus" aria-label="Less">−</button><span id="qVal">1</span><button id="qPlus" aria-label="More">+</button></div>
+        <button class="btn wide" id="addBtn">Add to cart</button>
+      </div>
+      <p class="hint" id="pHint" role="alert"></p>
+      <ul class="details" id="pDetails"></ul>
+      <p class="small">Ships in 1–3 business days from our partner warehouse, then 6–12 business days to arrive.</p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="cart" class="drawer" aria-labelledby="cartTitle">
+  <div class="drawer-head"><h2 id="cartTitle">Your cart</h2><button class="x" data-close aria-label="Close">×</button></div>
+  <div class="ship-bar" id="shipBar"></div>
+  <ul class="lines" id="lines"></ul>
+  <div class="drawer-foot">
+    <div class="row"><span>Subtotal</span><b id="subtotal">$0.00</b></div>
+    <p class="small">Shipping and any taxes are added at checkout.</p>
+    <button class="btn wide" id="checkoutBtn">Checkout</button>
+    <p class="hint" id="checkoutMsg" role="alert"></p>
+  </div>
+</dialog>
+
+<dialog id="policy" class="sheet policy" aria-labelledby="policyTitle">
+  <button class="x" data-close aria-label="Close">×</button>
+  <div id="policyBody"></div>
+</dialog>
+</body>
+</html>

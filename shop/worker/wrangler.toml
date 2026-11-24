@@ -1,0 +1,25 @@
+# Deploy:  cd shop/worker && npx wrangler deploy      (full steps in shop/README.md)
+name = "loomline-shop"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+# Where the shop is published, without a trailing slash (Stripe sends buyers back here).
+SHOP_URL = "https://YOUR-USER.github.io/Test/shop"
+# Sites allowed to call this API from the browser (the shop, and the admin page; same origin here).
+ALLOWED_ORIGIN = "https://YOUR-USER.github.io"
+# Countries you ship to, ISO codes, comma-separated.
+ALLOWED_COUNTRIES = "US,CA"
+# "true" once Stripe Tax is set up in your Stripe dashboard.
+AUTOMATIC_TAX = "false"
+
+# Orders are stored here. Create it with:  npx wrangler kv namespace create ORDERS   and paste the id.
+[[kv_namespaces]]
+binding = "ORDERS"
+id = "PASTE_KV_NAMESPACE_ID"
+
+# Secrets (never put these in this file):
+#   npx wrangler secret put STRIPE_SECRET_KEY        sk_live_... (or sk_test_... while testing)
+#   npx wrangler secret put STRIPE_WEBHOOK_SECRET    whsec_...
+#   npx wrangler secret put ADMIN_TOKEN              any long random string, used by admin.html
+#   npx wrangler secret put SUPPLIER_WEBHOOK_URL     optional: Zapier/Make/supplier URL that receives each paid order

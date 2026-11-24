@@ -1,5 +1,7 @@
 # Courtside Parlays
 
+> **Also in this repo: [Loomline](shop/README.md)**, a drop shipping clothing shop with Stripe Checkout and an Orders page, published at `/shop/`.
+
 A betting assistant for your phone covering the **NBA, NFL, MLB, tennis and esports**. It pulls live odds, player props, injuries and trades, rates every bet with two independent algorithms that check each other, builds parlays, compares a parlay with the same money bet as straights, and grades your tracked bets automatically. The **Prop Finder** puts every prop on the slate in one sortable table with hit rates.
 
 > **For entertainment, 21+.** No model can guarantee wins. Every leg you add to a parlay multiplies the sportsbook's edge, so parlays lose more often than they look like they should. Only bet what you can afford to lose. Gambling problem? Call 1-800-GAMBLER.

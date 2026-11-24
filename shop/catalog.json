@@ -1,0 +1,114 @@
+{
+  "store": "Loomline",
+  "currency": "usd",
+  "maxQty": 10,
+  "shipping": {
+    "freeOver": 7500,
+    "standard": { "label": "Standard shipping", "amount": 595, "minDays": 6, "maxDays": 12 },
+    "express": { "label": "Express shipping", "amount": 1495, "minDays": 3, "maxDays": 6 }
+  },
+  "categories": [
+    { "id": "tops", "name": "Tops" },
+    { "id": "layers", "name": "Layers" },
+    { "id": "bottoms", "name": "Bottoms" },
+    { "id": "accessories", "name": "Accessories" }
+  ],
+  "products": [
+    {
+      "id": "heavy-tee", "name": "Heavyweight Tee", "category": "tops", "shape": "tee",
+      "price": 2800, "compareAt": 3400, "tags": ["Bestseller"],
+      "description": "A boxy, 240 gsm cotton tee that keeps its shape wash after wash.",
+      "details": ["100% combed ring-spun cotton, 240 gsm", "Boxy fit with dropped shoulders", "Pre-shrunk, garment-dyed"],
+      "sizes": ["XS", "S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Black", "hex": "#1d1d1f" }, { "name": "Bone", "hex": "#e9e2d3" }, { "name": "Sage", "hex": "#9aab8f" }, { "name": "Navy", "hex": "#26324a" }]
+    },
+    {
+      "id": "pocket-tee", "name": "Everyday Pocket Tee", "category": "tops", "shape": "tee",
+      "price": 2400, "tags": [],
+      "description": "A lighter, softer tee with a chest pocket. The one you'll reach for first.",
+      "details": ["100% organic cotton, 180 gsm", "Regular fit", "Chest pocket"],
+      "sizes": ["XS", "S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "White", "hex": "#f6f6f3" }, { "name": "Heather Grey", "hex": "#b8b8b6" }, { "name": "Clay", "hex": "#b86e4f" }]
+    },
+    {
+      "id": "waffle-longsleeve", "name": "Waffle Long Sleeve", "category": "tops", "shape": "longsleeve",
+      "price": 3600, "tags": ["New"],
+      "description": "A textured waffle-knit long sleeve for cool mornings and layering.",
+      "details": ["60% cotton, 40% polyester waffle knit", "Ribbed cuffs", "Slim-regular fit"],
+      "sizes": ["S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Oat", "hex": "#d8c8aa" }, { "name": "Charcoal", "hex": "#3a3b3f" }, { "name": "Forest", "hex": "#2f4a3a" }]
+    },
+    {
+      "id": "oversized-hoodie", "name": "Oversized Fleece Hoodie", "category": "layers", "shape": "hoodie",
+      "price": 5800, "compareAt": 6800, "tags": ["Bestseller"],
+      "description": "Brushed-back 400 gsm fleece, a roomy cut and a double-lined hood.",
+      "details": ["80% cotton, 20% polyester, 400 gsm", "Oversized fit, size down for regular", "Kangaroo pocket, double-lined hood"],
+      "sizes": ["XS", "S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Black", "hex": "#1d1d1f" }, { "name": "Heather Grey", "hex": "#b8b8b6" }, { "name": "Dusty Blue", "hex": "#7d93ad" }, { "name": "Mocha", "hex": "#6b4f3f" }]
+    },
+    {
+      "id": "crewneck", "name": "Classic Crewneck", "category": "layers", "shape": "crewneck",
+      "price": 4800, "tags": [],
+      "description": "A clean crewneck sweatshirt with ribbed trims and a soft brushed inside.",
+      "details": ["80% cotton, 20% polyester, 350 gsm", "Regular fit", "Ribbed collar, cuffs and hem"],
+      "sizes": ["S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Bone", "hex": "#e9e2d3" }, { "name": "Navy", "hex": "#26324a" }, { "name": "Sage", "hex": "#9aab8f" }]
+    },
+    {
+      "id": "zip-hoodie", "name": "Full-Zip Hoodie", "category": "layers", "shape": "hoodie",
+      "price": 6200, "tags": ["New"],
+      "description": "Our fleece hoodie with a metal two-way zip and split front pockets.",
+      "details": ["80% cotton, 20% polyester, 380 gsm", "Regular fit", "Two-way metal zip"],
+      "sizes": ["S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Charcoal", "hex": "#3a3b3f" }, { "name": "Oat", "hex": "#d8c8aa" }]
+    },
+    {
+      "id": "relaxed-joggers", "name": "Relaxed Joggers", "category": "bottoms", "shape": "pants",
+      "price": 5200, "tags": ["Bestseller"],
+      "description": "Fleece joggers with a relaxed leg, deep pockets and an elastic drawcord waist.",
+      "details": ["80% cotton, 20% polyester, 350 gsm", "Relaxed tapered leg", "Elastic waist with drawcord"],
+      "sizes": ["XS", "S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Black", "hex": "#1d1d1f" }, { "name": "Heather Grey", "hex": "#b8b8b6" }, { "name": "Mocha", "hex": "#6b4f3f" }]
+    },
+    {
+      "id": "sweat-shorts", "name": "Fleece Sweat Shorts", "category": "bottoms", "shape": "shorts",
+      "price": 3800, "tags": [],
+      "description": "A 7-inch inseam sweat short in the same fleece as our joggers.",
+      "details": ["80% cotton, 20% polyester", "7\" inseam", "Side and back pockets"],
+      "sizes": ["S", "M", "L", "XL", "2XL"],
+      "colors": [{ "name": "Heather Grey", "hex": "#b8b8b6" }, { "name": "Navy", "hex": "#26324a" }, { "name": "Sage", "hex": "#9aab8f" }]
+    },
+    {
+      "id": "dad-cap", "name": "Washed Dad Cap", "category": "accessories", "shape": "cap",
+      "price": 2600, "tags": [],
+      "description": "A low-profile washed twill cap with an adjustable brass buckle.",
+      "details": ["100% cotton twill", "Unstructured, low profile", "Adjustable brass buckle"],
+      "sizes": ["One Size"],
+      "colors": [{ "name": "Black", "hex": "#1d1d1f" }, { "name": "Bone", "hex": "#e9e2d3" }, { "name": "Forest", "hex": "#2f4a3a" }]
+    },
+    {
+      "id": "rib-beanie", "name": "Ribbed Beanie", "category": "accessories", "shape": "beanie",
+      "price": 2200, "tags": [],
+      "description": "A chunky ribbed beanie with a fold-over cuff.",
+      "details": ["100% acrylic, soft-touch", "Fold-over cuff", "One size fits most"],
+      "sizes": ["One Size"],
+      "colors": [{ "name": "Charcoal", "hex": "#3a3b3f" }, { "name": "Clay", "hex": "#b86e4f" }, { "name": "Oat", "hex": "#d8c8aa" }]
+    },
+    {
+      "id": "crew-socks", "name": "Crew Socks (3 pairs)", "category": "accessories", "shape": "socks",
+      "price": 1800, "tags": [],
+      "description": "Cushioned crew socks with arch support. Three pairs in one colour.",
+      "details": ["Combed cotton blend", "Cushioned sole, arch support", "Sizes: S/M fits US 5–9, L/XL fits US 9–13"],
+      "sizes": ["S/M", "L/XL"],
+      "colors": [{ "name": "White", "hex": "#f6f6f3" }, { "name": "Black", "hex": "#1d1d1f" }]
+    },
+    {
+      "id": "canvas-tote", "name": "Heavy Canvas Tote", "category": "accessories", "shape": "tote",
+      "price": 2400, "tags": [],
+      "description": "A 16 oz canvas tote with an inside pocket and long handles.",
+      "details": ["16 oz cotton canvas", "Inside zip pocket", "15\" x 16\" x 5\""],
+      "sizes": ["One Size"],
+      "colors": [{ "name": "Natural", "hex": "#ece4d2" }, { "name": "Black", "hex": "#1d1d1f" }]
+    }
+  ]
+}

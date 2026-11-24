@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly from the home screen. ESPN data is always fetched live.
-const CACHE = "courtside-v4";
+const CACHE = "courtside-v5";
 const SHELL = ["./", "index.html", "styles.css", "js/app.js", "js/data.js", "js/model.js", "js/sports.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
@@ -15,6 +15,7 @@ self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;           // live data: straight to network
+  if (url.pathname.includes("/shop/")) return;          // the shop is a separate site; leave it alone
   // Network first so updates show up; cache only good responses; cached copy when offline
   e.respondWith(fetch(e.request).then((r) => {
     if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }

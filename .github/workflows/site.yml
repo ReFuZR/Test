@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: 22
       - name: Unit tests
-        run: node --test test/model.test.js test/edge.test.js test/sports.test.js
+        run: node --test test/model.test.js test/edge.test.js test/sports.test.js test/shop.test.js
 
   publish:
     needs: test
@@ -48,6 +48,9 @@ jobs:
         run: |
           mkdir -p _site
           cp -r index.html styles.css sw.js manifest.webmanifest .nojekyll js icons data _site/
+          # The shop, minus its Worker (supplier costs and SKUs stay private)
+          mkdir -p _site/shop
+          cp shop/*.html shop/*.css shop/*.js shop/*.json shop/*.svg _site/shop/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

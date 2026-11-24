@@ -1,0 +1,20 @@
+.admin { padding-top: 24px; padding-bottom: 48px; }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 20px; max-width: 460px; display: grid; gap: 14px; }
+.panel label, .ship-form label { display: grid; gap: 4px; font-size: 14px; font-weight: 600; }
+input { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-weight: 400; min-width: 0; }
+.btn.ghost { background: none; color: var(--fg); border: 1px solid var(--line); }
+.btn.sm { padding: 8px 14px; font-size: 14px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.order { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; margin-bottom: 14px; display: grid; gap: 10px; }
+.order header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.order h3 { font-family: var(--body); font-size: 16px; margin: 0; }
+.badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; background: var(--panel); text-transform: capitalize; }
+.badge.new { background: var(--accent); color: #fff; }
+.addr { white-space: pre-line; font-size: 14px; margin: 0; }
+.order table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.order td, .order th { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.order .tbl { overflow-x: auto; }
+.order code { font-size: 12px; word-break: break-all; }
+.ship-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+@media (max-width: 560px) { .ship-form { grid-template-columns: 1fr; } }
+.warn-line { color: var(--bad); font-size: 13px; margin: 0; }

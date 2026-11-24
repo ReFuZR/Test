@@ -1,0 +1,17 @@
+{
+  "_comment": "Private: what each product costs you and the supplier SKU to order. Bundled into the Worker only, never published with the shop. Amounts in cents. Replace with your supplier's real SKUs and prices. SKU patterns can use {color} and {size}.",
+  "products": {
+    "heavy-tee":         { "supplier": "CJ Dropshipping", "cost": 950,  "shipCost": 450, "sku": "LL-HTEE-{color}-{size}" },
+    "pocket-tee":        { "supplier": "CJ Dropshipping", "cost": 780,  "shipCost": 450, "sku": "LL-PTEE-{color}-{size}" },
+    "waffle-longsleeve": { "supplier": "CJ Dropshipping", "cost": 1240, "shipCost": 520, "sku": "LL-WAFL-{color}-{size}" },
+    "oversized-hoodie":  { "supplier": "CJ Dropshipping", "cost": 2050, "shipCost": 780, "sku": "LL-OHOOD-{color}-{size}" },
+    "crewneck":          { "supplier": "CJ Dropshipping", "cost": 1690, "shipCost": 700, "sku": "LL-CREW-{color}-{size}" },
+    "zip-hoodie":        { "supplier": "CJ Dropshipping", "cost": 2280, "shipCost": 780, "sku": "LL-ZHOOD-{color}-{size}" },
+    "relaxed-joggers":   { "supplier": "CJ Dropshipping", "cost": 1780, "shipCost": 700, "sku": "LL-JOG-{color}-{size}" },
+    "sweat-shorts":      { "supplier": "CJ Dropshipping", "cost": 1240, "shipCost": 520, "sku": "LL-SHRT-{color}-{size}" },
+    "dad-cap":           { "supplier": "CJ Dropshipping", "cost": 640,  "shipCost": 380, "sku": "LL-CAP-{color}" },
+    "rib-beanie":        { "supplier": "CJ Dropshipping", "cost": 520,  "shipCost": 350, "sku": "LL-BEAN-{color}" },
+    "crew-socks":        { "supplier": "CJ Dropshipping", "cost": 480,  "shipCost": 350, "sku": "LL-SOCK3-{color}-{size}" },
+    "canvas-tote":       { "supplier": "CJ Dropshipping", "cost": 690,  "shipCost": 420, "sku": "LL-TOTE-{color}" }
+  }
+}

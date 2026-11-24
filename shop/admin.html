@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Loomline Orders</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="shop.css">
+<link rel="stylesheet" href="admin.css">
+<script src="config.js"></script>
+<script type="module" src="admin.js"></script>
+</head>
+<body>
+<header class="top"><a class="logo" href="./">Loomline</a><span class="small">Orders</span></header>
+<main class="admin">
+  <form id="login" class="panel">
+    <h2>Connect</h2>
+    <label>Shop API address<input id="api" type="url" placeholder="https://loomline-shop.you.workers.dev" required></label>
+    <label>Admin token<input id="token" type="password" autocomplete="current-password" required></label>
+    <button class="btn">Load orders</button>
+    <p class="hint" id="loginMsg" role="alert"></p>
+  </form>
+  <section id="board" hidden>
+    <div class="toolbar">
+      <div class="chips" id="filters" role="tablist" aria-label="Status">
+        <button role="tab" data-f="new" aria-selected="true">To order</button>
+        <button role="tab" data-f="placed" aria-selected="false">Placed</button>
+        <button role="tab" data-f="shipped" aria-selected="false">Shipped</button>
+        <button role="tab" data-f="cancelled" aria-selected="false">Cancelled</button>
+        <button role="tab" data-f="all" aria-selected="false">All</button>
+      </div>
+      <div class="actions"><button class="btn ghost" id="refresh">Refresh</button><button class="btn" id="csv">Download CSV</button><button class="btn ghost" id="logout">Sign out</button></div>
+    </div>
+    <p class="small" id="summary"></p>
+    <div id="orders"></div>
+  </section>
+</main>
+</body>
+</html>
