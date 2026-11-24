@@ -1,82 +1,49 @@
-# Stock Trading Signals
+# Courtside Parlays
 
-A command-line tool that scans stocks and gives **BUY / SELL / HOLD** signals based on technical analysis. Each signal comes with a stop-loss, a price target and an optional **call/put options idea**. It also backtests the strategy on price history.
+An NBA betting assistant that runs on your phone. It pulls live odds, player props, injuries and trades from ESPN, estimates each bet's chance of hitting, builds parlays, compares a parlay with the same money bet as straights, and grades your tracked bets automatically when the games end.
 
-> ⚠️ **Educational tool only, not financial advice.** Technical signals are often wrong. Backtest results don't predict future returns, and options can lose 100% of their value. Never trade money you can't afford to lose.
+> **For entertainment, 21+.** No model can guarantee wins. Every leg you add to a parlay multiplies the sportsbook's edge, so parlays lose more often than they look like they should. Only bet what you can afford to lose. Gambling problem? Call 1-800-GAMBLER.
 
-## Install
+## Put it on your phone
 
-```bash
-pip install -r requirements.txt
-```
+1. On GitHub, open this repo → **Settings → Pages**.
+2. Under **Build and deployment**, choose **Deploy from a branch**, pick the branch this code is on, folder **/ (root)**, and save.
+3. After a minute GitHub shows the site's address (like `https://<user>.github.io/Test/`). Open it on your phone.
+4. Add it to your home screen:
+   - **iPhone (Safari):** Share → **Add to Home Screen**
+   - **Android (Chrome):** ⋮ menu → **Add to Home screen** / **Install app**
 
-## Usage
+It then opens full-screen like a normal app. There's no server and no account; it talks to ESPN directly from your phone.
 
-```bash
-# Latest signal for a watchlist (live data from Yahoo Finance)
-python -m signals scan AAPL MSFT NVDA TSLA SPY
+## What's in it
 
-# Hide the call/put ideas
-python -m signals scan AAPL --no-options
-
-# Backtest the strategy on 5 years of history
-python -m signals backtest AAPL --period 5y
-
-# Tune the backtest: buy at score >= 4, sell at score <= -1
-python -m signals backtest AAPL --entry 4 --exit -1
-
-# Your own data (CSV with Date, Open, High, Low, Close, Volume)
-python -m signals scan MYSTOCK --csv prices.csv
-
-# Offline demo with synthetic prices
-python -m signals scan AAPL MSFT --demo
-```
-
-Example output:
-
-```
-TICKER  DATE             PRICE  SCORE  ACTION
---------------------------------------------------
-UP      2025-02-21      298.19     +5  BUY
-
-== UP: BUY (score +5)
-   +2 price above 200-day SMA (long-term uptrend)
-   +1 20-day SMA above 50-day
-   +2 MACD bullish crossover
-   Stop-loss $285.80   Target $322.96
-   Options: Consider CALL, strike ~$304.38, 30-45 DTE (smaller size)
-```
-
-## How signals are scored
-
-Each indicator adds or subtracts points:
-
-| Signal | Points |
+| Tab | What it does |
 |---|---|
-| Price above / below 200-day SMA | +2 / −2 |
-| 20/50 SMA golden / death cross (on that day) | +2 / −2 |
-| 20-day SMA above / below 50-day | +1 / −1 |
-| MACD bullish / bearish crossover | +2 / −2 |
-| MACD above / below signal line | +1 / −1 |
-| RSI < 30 oversold / > 70 overbought | +2 / −2 |
-| Close below lower / above upper Bollinger band | +1 / −1 |
-| Volume > 1.5× average on an up / down day | +1 / −1 |
+| **Games** | Every game with DraftKings moneyline, spread and total, the model's % for each side, a projected score, and each team's injuries with an estimated point impact. Tap a price to add it to your slip. |
+| **Props** | Player prop ladders (Points, Rebounds, Assists, 3-Pointers, combos like PRA, double-doubles), each with the model %, the book's %, last-10 / season hit rates, and a last-10 bar chart. Sort by *Most likely* or *Best vs. book*. |
+| **Slip** | Your legs, editable odds (match your book's price), and **Parlay vs Straights**: payout, hit chance and expected value for each. **Auto-parlay** scans the whole slate and builds the most likely 2-5 leg parlays that still pay at least +100 (Safer), +250 (Balanced) or +600 (Long shot). |
+| **Tracker** | Bets you saved, graded automatically from ESPN box scores: record, profit, ROI, leg hit rate, parlays vs straights, hit rate by bet type, and an **"Is the model honest?"** table comparing predicted % with how often legs actually hit. Back up / Restore saves your history to a file. |
+| **Injuries** | The injury report (all teams or just today's slate) plus trades and roster moves. |
 
-**Score → action:** ≥ 6 STRONG BUY · ≥ 3 BUY · −2…+2 HOLD · ≤ −3 SELL · ≤ −6 STRONG SELL
+## How the model works
 
-**Risk levels:** the stop-loss is 2 × ATR from price (`--atr-mult` changes this). The target is twice that distance, a 2:1 reward-to-risk ratio.
+**Game lines.** Each team's season point differential, shrunk toward average early in the season, plus 2.2 points for home court. It subtracts the estimated impact of injured players (based on their scoring and minutes, weighted Out 100% / Doubtful 80% / Questionable 40%) and turns the projected margin and total into win, cover and over/under probabilities. That estimate is then blended 40/60 with the sportsbook's no-vig line. The market already knows about rest, rotations and late news, so this keeps the numbers realistic.
 
-**Options idea:** on a buy signal it suggests a call about 1 ATR out of the money, 30–45 days to expiry. A sell signal gets the mirror-image put. These are generic starting points. They don't use live option chains, implied volatility or earnings dates.
+**Player props.** Recency-weighted averages from the player's game log (last season fills in when there are fewer than 8 games this season). Low-count stats use a Poisson distribution, the rest a normal distribution, mixed with actual hit rates over the season and last 10 games. Scoring props are adjusted for the opponent's points allowed. The result is blended 65/35 with the book's price. Players listed as Out are dropped.
 
-**Backtest:** long only. It acts on each signal at the next day's open, so it can't see the future. It exits on the sell threshold or the stop-loss and charges 0.1% per trade.
+**Parlays.** Hit chance is the product of the legs' chances. That assumes the legs are independent, which isn't true for legs from the same game, so the app warns you about those.
 
-## Project layout
+**Grading.** Moneyline, spread and total legs grade from the final score. Player legs grade from the box score. A player who doesn't play is voided, and that leg drops out of a parlay (the usual sportsbook rule).
+
+## Files
 
 ```
-signals/indicators.py  SMA, EMA, RSI, MACD, Bollinger Bands, ATR, volume ratio
-signals/strategy.py    scoring, actions, stop/target, options idea
-signals/data.py        Yahoo Finance, CSV and synthetic data loaders
-signals/backtest.py    historical simulation
-signals/__main__.py    command-line interface
-tests/                 pytest suite (run: python -m pytest)
+index.html, styles.css    the app
+js/app.js                 screens and interactions
+js/data.js                ESPN endpoints and parsers
+js/model.js               odds math, predictions, parlay builder, grading
+sw.js, manifest.webmanifest, icons/   home-screen install + offline shell
+test/                     unit tests (run: npm test) with real saved ESPN responses
 ```
+
+Your bets are stored only on your phone (browser storage). Use **Back up** in the Tracker now and then, especially before clearing browser data.
