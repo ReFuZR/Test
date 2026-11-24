@@ -1,5 +1,6 @@
 import * as D from "./data.js";
 import * as M from "./model.js";
+import { SPORTS } from "./sports.js";
 
 // ---------------- storage (defensive: corrupted or foreign data is ignored, never fatal) ----------------
 const store = {
@@ -12,16 +13,19 @@ const store = {
 
 const finite = (x) => typeof x === "number" && Number.isFinite(x);
 const RESULTS = new Set(["pending", "win", "loss", "push", "void"]);
-const KINDS = new Set(["ml", "spread", "total", "prop", "dd", "td"]);
+const KINDS = new Set(["ml", "spread", "total", "prop", "dd", "td", "win"]);
 
 /** Keep only well-formed legs; anything else (old versions, hand-edited backups) is dropped. */
 function cleanLeg(l) {
   if (!l || typeof l !== "object" || !KINDS.has(l.kind) || typeof l.eventId !== "string" || !finite(M.toDecimal(l.american))) return null;
+  const sport = SPORTS[l.sport] ? l.sport : "nba";            // bets saved before multi-sport were all NBA
   return {
     id: String(l.id || `${l.eventId}|${l.kind}|${l.side || ""}|${l.athleteId || ""}|${(l.stats || []).join("+")}|${l.threshold ?? ""}`),
-    eventId: l.eventId, kind: l.kind, side: l.side, line: finite(l.line) ? l.line : undefined,
+    sport, eventId: l.eventId, kind: l.kind, side: l.side, line: finite(l.line) ? l.line : undefined,
     athleteId: l.athleteId ? String(l.athleteId) : undefined, teamId: l.teamId,
-    stats: Array.isArray(l.stats) ? l.stats.filter((s) => ["pts", "reb", "ast", "tpm", "stl", "blk"].includes(s)) : [],
+    pickId: l.pickId ? String(l.pickId) : undefined, tour: typeof l.tour === "string" ? l.tour : undefined,
+    priceSource: l.priceSource === "model" ? "model" : undefined,
+    stats: Array.isArray(l.stats) ? l.stats.filter((s) => typeof s === "string" && /^[A-Za-z_]{1,40}$/.test(s)) : [],
     threshold: finite(l.threshold) ? l.threshold : undefined,
     label: String(l.label || "Bet").slice(0, 120), game: String(l.game || "").slice(0, 40), start: l.start,
     // A missing probability stays missing: a made-up 50% would skew the "Is the model honest?" stats
@@ -44,7 +48,11 @@ function cleanBet(b) {
 // ---------------- state ----------------
 const S = {
   tab: "games",
+  sport: SPORTS[store.get("cp.sport", "nba")] ? store.get("cp.sport", "nba") : "nba",
   dayOffset: 0,
+  matches: [], rankings: {}, esportsMeta: null, esportsGame: "all",   // tennis / esports
+  finder: { stat: "All", minHit: 0, side: "all", verifiedOnly: false, q: "", sort: "l10", dir: -1, open: null, limit: 60 },
+  finderLegs: null, finderLoading: null,
   games: [], standings: null, injuries: {}, transactions: null,
   injuryImpact: {},          // teamId -> {total, form, players}
   forms: {},                 // teamId -> recent-form rating (algorithm B)
@@ -78,7 +86,13 @@ const timeOf = (iso) => (validDate(iso) ? new Date(iso).toLocaleTimeString([], {
 const shortDate = (iso) => (validDate(iso) ? new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" }) : "");
 const ago = (iso) => { if (!validDate(iso)) return ""; const h = (Date.now() - new Date(iso)) / 36e5; return h < 1 ? "just now" : h < 24 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`; };
 const statusClass = (s) => (/out|suspen/i.test(s) ? "out" : /doubt|quest|day-to-day|gtd/i.test(s) ? "q" : "info");
-const seasonYear = () => { const d = new Date(); return d.getMonth() >= 7 ? d.getFullYear() + 1 : d.getFullYear(); };
+const sport = () => SPORTS[S.sport];
+/** ESPN's season label for the sport's current season (NBA 2026-27 = 2027; NFL Sep-Feb = start year; MLB = calendar year). */
+function seasonYear(sp = sport()) {
+  const d = new Date(), y = d.getFullYear(), m = d.getMonth();
+  if (sp.id === "nba") return m >= 7 ? y + 1 : y;
+  return m >= 2 ? y : y - 1;
+}
 const lastName = (n) => String(n || "").trim().split(/\s+/).slice(-1)[0];
 const avg = (rows, k) => { const xs = (rows || []).map((r) => r[k]).filter(finite); return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0; };
 
@@ -114,22 +128,24 @@ function toggleLeg(leg) {
 
 // ---------------- data loading ----------------
 const inflight = new Map();   // one request per player even when injuries and props ask at once
-function gamelog(athleteId) {
-  if (S.gamelogs[athleteId]) return Promise.resolve(S.gamelogs[athleteId]);
-  if (inflight.has(athleteId)) return inflight.get(athleteId);
+function gamelog(athleteId, sp = sport()) {
+  const ck = `${sp.id}:${athleteId}`;
+  if (S.gamelogs[ck]) return Promise.resolve(S.gamelogs[ck]);
+  if (inflight.has(ck)) return inflight.get(ck);
   const job = (async () => {
-    const key = `cp.gl.${athleteId}`, cached = store.get(key, null);
-    if (cached && finite(cached.t) && Array.isArray(cached.rows) && Date.now() - cached.t < 3 * 36e5) return (S.gamelogs[athleteId] = cached.rows);
-    let rows = D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId), 36e5));
-    if (rows.length < 8) {   // early season or rookie: lean on last season too
-      try { rows = rows.concat(D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId, seasonYear() - 1), 864e5)).slice(0, 25)); } catch { /* no history */ }
+    const key = `cp.gl.${sp.id}.${athleteId}`, cached = store.get(key, null);
+    if (cached && finite(cached.t) && Array.isArray(cached.rows) && Date.now() - cached.t < 3 * 36e5) return (S.gamelogs[ck] = cached.rows);
+    let rows = D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId, undefined, sp), 36e5), sp);
+    if (rows.length < 8) {   // early season, offseason or rookie: lean on last season too
+      try { rows = rows.concat(D.parseGamelog(await D.getJSON(D.URLS.gamelog(athleteId, seasonYear(sp) - (rows.length ? 1 : 0), sp), 864e5), sp).filter((r) => !rows.some((x) => x.eventId === r.eventId)).slice(0, 25)); } catch { /* no history */ }
     }
     store.set(key, { t: Date.now(), rows: rows.slice(0, 40) });
-    return (S.gamelogs[athleteId] = rows);
-  })().finally(() => inflight.delete(athleteId));
-  inflight.set(athleteId, job);
+    return (S.gamelogs[ck] = rows);
+  })().finally(() => inflight.delete(ck));
+  inflight.set(ck, job);
   return job;
 }
+const logsOf = (athleteId) => S.gamelogs[`${S.sport}:${athleteId}`] || [];
 
 /** Drop cached player logs older than a day so phone storage doesn't fill up over a season. */
 function pruneCache() {
@@ -142,16 +158,25 @@ function pruneCache() {
   } catch { /* storage blocked */ }
 }
 
+function resetSportData() {
+  Object.assign(S, { games: [], matches: [], standings: null, injuries: {}, transactions: null, injuryImpact: {}, forms: {}, rosters: {}, propLegs: {},
+    propGame: null, propStat: "All", suggestions: null, finderLegs: null, finderLoading: null });
+  S.finder.open = null; S.finder.stat = "All"; S.finder.limit = 60;
+}
+
 async function loadDay() {
   const token = ++S.loadToken;
-  S.loading = true; S.error = null; S.propLegs = {}; S.suggestions = null; S.forms = {}; S.injuryImpact = {}; render();
+  S.loading = true; S.error = null; S.propLegs = {}; S.suggestions = null; S.forms = {}; S.injuryImpact = {}; S.finderLegs = null; S.finderLoading = null; render();
+  const sp = sport();
   try {
+    if (sp.kind === "tennis") return await loadTennis(token);
+    if (sp.kind === "esports") return await loadEsports(token);
     const [sb, st, inj] = await Promise.all([
-      D.getJSON(D.URLS.scoreboard(ymd(dayDate())), 30_000),
-      D.getJSON(D.URLS.standings(), 600_000),
-      D.getJSON(D.URLS.injuries(), 300_000).catch(() => ({})),   // injuries are nice-to-have
+      D.getJSON(D.URLS.scoreboard(ymd(dayDate()), sp), 30_000),
+      D.getJSON(D.URLS.standings(sp), 600_000),
+      D.getJSON(D.URLS.injuries(sp), 300_000).catch(() => ({})),   // injuries are nice-to-have
     ]);
-    if (token !== S.loadToken) return;                 // user changed day meanwhile
+    if (token !== S.loadToken) return;                 // user changed day or sport meanwhile
     S.games = D.parseScoreboard(sb).sort((a, b) => new Date(a.date) - new Date(b.date));
     S.standings = D.parseStandings(st);
     S.injuries = D.parseInjuries(inj);
@@ -160,24 +185,62 @@ async function loadDay() {
     // Order matters: the form model's injury charge needs each team's last-10 game list from computeForms
     await computeForms(token);
     if (token === S.loadToken) render();
-    await computeInjuryImpacts(token);
-    if (token === S.loadToken) render();
+    if (sp.injuryModel) { await computeInjuryImpacts(token); if (token === S.loadToken) render(); }
   } catch (e) {
     if (token !== S.loadToken) return;
-    S.loading = false; S.error = e?.message || "Couldn't reach ESPN."; render();
+    S.loading = false; S.error = e?.message || "Couldn't load data."; render();
   }
+}
+
+/** Tennis: singles from both tours for the day, rated by ranking points (A) and ranking position (B). */
+async function loadTennis(token) {
+  const [atp, wta, ra, rw] = await Promise.all([
+    D.getJSON(D.URLS.tennisScoreboard("atp", ymd(dayDate())), 60_000),
+    D.getJSON(D.URLS.tennisScoreboard("wta", ymd(dayDate())), 60_000).catch(() => ({})),
+    D.getJSON(D.URLS.tennisRankings("atp"), 864e5).catch(() => ({})),
+    D.getJSON(D.URLS.tennisRankings("wta"), 864e5).catch(() => ({})),
+  ]);
+  if (token !== S.loadToken) return;
+  const seen = new Set();
+  const day = ymd(dayDate());
+  S.matches = [...D.parseTennis(atp, "atp"), ...D.parseTennis(wta, "wta")]
+    .filter((m) => !seen.has(m.id) && seen.add(m.id))
+    .filter((m) => !validDate(m.date) || ymd(new Date(m.date)) === day)    // ESPN returns the whole tournament
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  S.rankings = { ...D.parseRankings(ra), ...D.parseRankings(rw) };
+  S.loading = false; render();
+}
+
+/** Esports: the file the GitHub Action publishes beside the app (PandaScore can't be called from a phone). */
+async function loadEsports(token) {
+  let json;
+  try { json = await D.getJSON(new URL(sport().data, location.href).href, 300_000, { source: "the esports feed" }); }
+  catch (e) {
+    if (token !== S.loadToken) return;
+    S.loading = false;
+    S.error = e?.kind === "notfound" ? "Esports data isn't published yet. It's built by the site's GitHub Action: add your PandaScore key as the PANDASCORE_TOKEN secret (see README)." : e.message;
+    return render();
+  }
+  if (token !== S.loadToken) return;
+  const data = D.parseEsports(json);
+  S.esportsMeta = { updated: data.updated, games: data.games, teams: data.teams, error: json?.error || "" };
+  const day = ymd(dayDate());
+  S.matches = data.matches.filter((m) => validDate(m.date) && ymd(new Date(m.date)) === day).sort((a, b) => new Date(a.date) - new Date(b.date));
+  S.allEsports = data.matches;                          // grading looks up finished matches here
+  S.loading = false; render();
 }
 
 /** Algorithm B input: each team's last-10 opponent-adjusted form, from its schedule. */
 async function computeForms(token) {
+  const sp = sport();
   const ids = [...new Set(S.games.flatMap((g) => [g.home.id, g.away.id]))];
-  const ratings = Object.fromEntries(Object.values(S.standings?.teams || {}).map((t) => [t.id, M.teamRating(t)]));
-  const res = await D.pool(ids, 6, async (id) => [id, D.parseSchedule(await D.getJSON(D.URLS.schedule(id), 36e5), id)]);
+  const ratings = Object.fromEntries(Object.values(S.standings?.teams || {}).map((t) => [t.id, M.teamRating(t, sp)]));
+  const res = await D.pool(ids, 6, async (id) => [id, D.parseSchedule(await D.getJSON(D.URLS.schedule(id, sp), 36e5), id)]);
   if (token !== S.loadToken) return;
-  for (const r of res) if (r) { S.forms[r[0]] = M.formRating(r[1], ratings); S.forms[r[0]] && (S.forms[r[0]].games = r[1].slice(0, 10).map((g) => g.eventId)); }
+  for (const r of res) if (r) { S.forms[r[0]] = M.formRating(r[1], ratings, 10, sp); S.forms[r[0]] && (S.forms[r[0]].games = r[1].slice(0, 10).map((g) => g.eventId)); }
 }
 
-/** Estimated margin lost to injuries. Season model: scaled by share of season played. Form model: by share of last 10. */
+/** Estimated margin lost to injuries (NBA only). Season model: by share of season played. Form model: by share of last 10. */
 async function computeInjuryImpacts(token) {
   const teamIds = new Set(S.games.flatMap((g) => [g.home.id, g.away.id]));
   const jobs = [];
@@ -206,89 +269,143 @@ async function computeInjuryImpacts(token) {
 }
 
 function projections(g) {
+  const sp = sport();
   const T = S.standings?.teams || {};
   const inj = { h: S.injuryImpact[g.home.id] || {}, a: S.injuryImpact[g.away.id] || {} };
   return {
-    A: M.projectGame(T[g.home.id], T[g.away.id], { homeInjury: inj.h.total, awayInjury: inj.a.total }),
-    B: M.projectGameForm(S.forms[g.home.id], S.forms[g.away.id], { homeInjury: inj.h.form, awayInjury: inj.a.form }),
+    A: M.projectGame(T[g.home.id], T[g.away.id], { homeInjury: inj.h.total, awayInjury: inj.a.total }, sp),
+    B: M.projectGameForm(S.forms[g.home.id], S.forms[g.away.id], { homeInjury: inj.h.form, awayInjury: inj.a.form }, sp),
   };
 }
 
 /** Attach both algorithms' estimates, the cross-check, and the final market-blended probability. */
 function finalize(leg, pA, pB, pMarket, wMarket) {
   const c = M.consensus(pA, pB);
-  return { ...leg, pA, pB, gap: c.gap, verified: c.verified, check: c.status, pModel: M.blend(c.p, pMarket, wMarket) };
+  const out = { sport: S.sport, ...leg, pA, pB, gap: c.gap, verified: c.verified, check: c.status, pModel: M.blend(c.p, pMarket, wMarket) };
+  // No sportsbook price (unpriced props, tennis, esports): use the model's fair price and say so
+  if (!finite(out.american) && finite(out.pModel) && out.pModel > 0) { out.american = M.fairAmerican(out.pModel); out.priceSource = "model"; out.pBook = NaN; }
+  return out;
 }
 
 function gameLegs(g) {
+  const sp = sport();
   const o = g.odds, { A, B } = projections(g);
   if (!o || (!A && !B)) return {};
   const base = { eventId: g.id, game: `${g.away.abbr} @ ${g.home.abbr}`, start: g.date };
   const legs = {};
+  const sdM = sp.sdMargin, sdT = sp.sdTotal;
   const add = (key, leg, pA, pB, pBook) => { if (finite(leg.american)) legs[key] = finalize({ ...leg, pBook }, pA, pB, pBook, 0.6); };
   const [nvH, nvA] = M.noVig(o.homeML, o.awayML);
-  add("mlHome", { ...base, id: `${g.id}|ml|home`, kind: "ml", side: "home", teamId: g.home.id, label: `${g.home.abbr} ML`, american: o.homeML, open: o.homeMLOpen }, A?.pHome, B?.pHome, nvH);
-  add("mlAway", { ...base, id: `${g.id}|ml|away`, kind: "ml", side: "away", teamId: g.away.id, label: `${g.away.abbr} ML`, american: o.awayML, open: o.awayMLOpen }, A && 1 - A.pHome, B && 1 - B.pHome, nvA);
+  add("mlHome", { ...base, id: `${S.sport}|${g.id}|ml|home`, kind: "ml", side: "home", teamId: g.home.id, label: `${g.home.abbr} ML`, american: o.homeML, open: o.homeMLOpen }, A?.pHome, B?.pHome, nvH);
+  add("mlAway", { ...base, id: `${S.sport}|${g.id}|ml|away`, kind: "ml", side: "away", teamId: g.away.id, label: `${g.away.abbr} ML`, american: o.awayML, open: o.awayMLOpen }, A && 1 - A.pHome, B && 1 - B.pHome, nvA);
   const [nsH, nsA] = M.noVig(o.homeSpreadOdds, o.awaySpreadOdds);
-  if (finite(o.homeSpread)) add("spHome", { ...base, id: `${g.id}|spread|home`, kind: "spread", side: "home", line: o.homeSpread, label: `${g.home.abbr} ${fmtLine(o.homeSpread)}`, american: o.homeSpreadOdds }, A && M.pCover(A.margin, o.homeSpread), B && M.pCover(B.margin, o.homeSpread), nsH);
-  if (finite(o.awaySpread)) add("spAway", { ...base, id: `${g.id}|spread|away`, kind: "spread", side: "away", line: o.awaySpread, label: `${g.away.abbr} ${fmtLine(o.awaySpread)}`, american: o.awaySpreadOdds }, A && M.pCover(-A.margin, o.awaySpread), B && M.pCover(-B.margin, o.awaySpread), nsA);
+  if (finite(o.homeSpread)) add("spHome", { ...base, id: `${S.sport}|${g.id}|spread|home`, kind: "spread", side: "home", line: o.homeSpread, label: `${g.home.abbr} ${fmtLine(o.homeSpread)}`, american: o.homeSpreadOdds }, A && M.pCover(A.margin, o.homeSpread, sdM), B && M.pCover(B.margin, o.homeSpread, sdM), nsH);
+  if (finite(o.awaySpread)) add("spAway", { ...base, id: `${S.sport}|${g.id}|spread|away`, kind: "spread", side: "away", line: o.awaySpread, label: `${g.away.abbr} ${fmtLine(o.awaySpread)}`, american: o.awaySpreadOdds }, A && M.pCover(-A.margin, o.awaySpread, sdM), B && M.pCover(-B.margin, o.awaySpread, sdM), nsA);
   const [nO, nU] = M.noVig(o.overOdds, o.underOdds);
   if (finite(o.total)) {
-    add("over", { ...base, id: `${g.id}|total|over`, kind: "total", side: "over", line: o.total, label: `Over ${o.total} · ${base.game}`, american: o.overOdds }, A && M.pOver(A.total, o.total), B && M.pOver(B.total, o.total), nO);
-    add("under", { ...base, id: `${g.id}|total|under`, kind: "total", side: "under", line: o.total, label: `Under ${o.total} · ${base.game}`, american: o.underOdds }, A && 1 - M.pOver(A.total, o.total), B && 1 - M.pOver(B.total, o.total), nU);
+    add("over", { ...base, id: `${S.sport}|${g.id}|total|over`, kind: "total", side: "over", line: o.total, label: `Over ${o.total} · ${base.game}`, american: o.overOdds }, A && M.pOver(A.total, o.total, sdT), B && M.pOver(B.total, o.total, sdT), nO);
+    add("under", { ...base, id: `${S.sport}|${g.id}|total|under`, kind: "total", side: "under", line: o.total, label: `Under ${o.total} · ${base.game}`, american: o.underOdds }, A && 1 - M.pOver(A.total, o.total, sdT), B && 1 - M.pOver(B.total, o.total, sdT), nU);
   }
   return legs;
 }
 
+/** Tennis / esports: one "to win" pick per side, priced at the model's fair odds (no sportsbook feed). */
+function matchLegs(m) {
+  if (m.state !== "pre") return [];
+  let pa, pb, detail;
+  const [x, y] = S.sport === "tennis" ? m.players : m.teams;
+  if (S.sport === "tennis") {
+    // Two unranked players would just be two default ratings "agreeing" at 50%: no pick is more honest
+    if (!S.rankings[x.id] && !S.rankings[y.id]) return [];
+    const rx = S.rankings[x.id] || {}, ry = S.rankings[y.id] || {};
+    pa = M.tennisPointsProb(rx.points, ry.points); pb = M.tennisRankProb(rx.rank, ry.rank);
+    detail = { a: `#${rx.rank || "—"} · ${finite(rx.points) ? rx.points : "—"} pts`, b: `#${ry.rank || "—"} · ${finite(ry.points) ? ry.points : "—"} pts` };
+  } else {
+    const tx = S.esportsMeta?.teams?.[x.id] || {}, ty = S.esportsMeta?.teams?.[y.id] || {};
+    if (!tx.games10 && !ty.games10) return [];                           // neither team has any recent results
+    pa = M.eloProb(tx.elo, ty.elo); pb = M.formProb(tx.wins10, tx.games10, ty.wins10, ty.games10);
+    if (!finite(tx.elo) || !finite(ty.elo)) pa = NaN;                     // unrated team: only the form model speaks
+    detail = { a: `Elo ${tx.elo ?? "—"} · ${tx.wins10 ?? 0}-${(tx.games10 ?? 0) - (tx.wins10 ?? 0)} L${tx.games10 ?? 0}`, b: `Elo ${ty.elo ?? "—"} · ${ty.wins10 ?? 0}-${(ty.games10 ?? 0) - (ty.wins10 ?? 0)} L${ty.games10 ?? 0}` };
+  }
+  const game = S.sport === "tennis" ? `${x.short} v ${y.short}` : `${x.short} v ${y.short}${m.gameName ? ` · ${m.gameName}` : ""}`;
+  const mk = (who, other, p1, p2, side) => finalize({
+    id: `${S.sport}|${m.id}|win|${who.id}`, eventId: m.id, kind: "win", pickId: who.id, tour: m.tour, side,
+    label: `${who.short} to win`, game, start: m.date, american: NaN, detail: { line: side === "a" ? detail.a : detail.b },
+  }, p1, p2, NaN, 0);
+  return [mk(x, y, pa, pb, "a"), mk(y, x, finite(pa) ? 1 - pa : pa, finite(pb) ? 1 - pb : pb, "b")];
+}
+
 async function loadProps(eventId, onProgress) {
   if (S.propLegs[eventId]) return S.propLegs[eventId];
+  const sp = sport();
+  if (sp.kind !== "espn") return [];
   const g = S.games.find((x) => x.id === eventId);
   if (!g) return [];
   const [propsJson, rh, ra] = await Promise.all([
-    D.getJSON(D.URLS.props(eventId), 120_000),
-    S.rosters[g.home.id] ? null : D.getJSON(D.URLS.roster(g.home.id), 36e5).catch(() => null),
-    S.rosters[g.away.id] ? null : D.getJSON(D.URLS.roster(g.away.id), 36e5).catch(() => null),
+    D.getJSON(D.URLS.props(eventId, sp), 120_000),
+    S.rosters[g.home.id] ? null : D.getJSON(D.URLS.roster(g.home.id, sp), 36e5).catch(() => null),
+    S.rosters[g.away.id] ? null : D.getJSON(D.URLS.roster(g.away.id, sp), 36e5).catch(() => null),
   ]);
   if (rh) S.rosters[g.home.id] = Object.fromEntries(Object.entries(D.parseRoster(rh)).map(([k, v]) => [k, { ...v, teamId: v.teamId || g.home.id }]));
   if (ra) S.rosters[g.away.id] = Object.fromEntries(Object.entries(D.parseRoster(ra)).map(([k, v]) => [k, { ...v, teamId: v.teamId || g.away.id }]));
-  const props = D.parseProps(propsJson);
+  const props = D.parseProps(propsJson, sp);
   if (props.length && !S.rosters[g.home.id] && !S.rosters[g.away.id]) throw new D.FetchError("Couldn't load the team rosters to match players to props.", "http");
   const ids = [...new Set(props.map((p) => p.athleteId))];
   let done = 0;
-  await D.pool(ids, 6, async (id) => { try { await gamelog(id); } finally { onProgress?.(++done / Math.max(1, ids.length)); } });
+  await D.pool(ids, 6, async (id) => { try { await gamelog(id, sp); } finally { onProgress?.(++done / Math.max(1, ids.length)); } });
 
   const T = S.standings?.teams || {}, league = S.standings?.leagueOpp || 114;
   const legs = [];
   for (const pr of props) {
     const info = S.rosters[g.home.id]?.[pr.athleteId] || S.rosters[g.away.id]?.[pr.athleteId];
-    const rows = S.gamelogs[pr.athleteId] || [];
+    const rows = logsOf(pr.athleteId);
     if (!info || !rows.length) continue;                 // traded away / not on either roster / no history
-    const oppId = info.teamId === g.home.id ? g.away.id : g.home.id;
+    const oppTeam = info.teamId === g.home.id ? g.away : g.home;
     const injury = (S.injuries[info.teamId] || []).find((i) => i.athleteId === pr.athleteId);
-    let a, b;
+    const under = pr.side === "under";
+    let a, b, values = [];
     if (pr.kind === "prop") {
-      const ratio = T[oppId]?.opp ? T[oppId].opp / league : 1;
-      const oppFactor = pr.stats.includes("pts") ? 1 + 0.7 * (ratio - 1) : 1;
       const statOf = (r) => pr.stats.reduce((s, k) => s + (finite(r[k]) ? r[k] : NaN), 0);
-      a = M.propProb(rows.map(statOf), pr.threshold, oppFactor);
-      b = M.perMinuteProp(rows, pr.threshold, statOf, oppFactor);
+      // Only games where he logged this kind of stat (a QB's log has no receiving yards, etc.)
+      const own = rows.filter((r) => finite(statOf(r)));
+      if (!own.length) continue;
+      // Sanity check: if his recent log is nowhere near the book's line, the log doesn't describe his current
+      // role (position change, long injury, wrong data) and any % would be fiction. Skip rather than mislead.
+      const recentMean = own.slice(0, 10).reduce((s, r) => s + statOf(r), 0) / Math.min(10, own.length);
+      const bookLine = finite(pr.line) ? pr.line : pr.threshold;
+      if (bookLine >= 2 && recentMean < 0.15 * bookLine) continue;
+      const ratio = T[oppTeam.id]?.opp ? T[oppTeam.id].opp / league : 1;
+      const oppFactor = pr.stats.some((k) => (sp.oppAdjust || []).includes(k)) ? 1 + 0.7 * (ratio - 1) : 1;
+      values = own.map((r) => ({ v: statOf(r), opp: r.opp, oppId: r.oppId, date: r.date }));
+      a = M.propProb(own.map(statOf), pr.threshold, oppFactor);
+      const vol = pr.vol === null ? null : pr.vol || sp.defaultVol;
+      const volOf = vol ? (r) => vol.reduce((s, k) => s + (finite(r[k]) ? r[k] : 0), 0) : null;
+      b = volOf ? M.perVolumeProp(own, pr.threshold, statOf, volOf, oppFactor) : M.recentProp(own.map(statOf), pr.threshold, oppFactor);
     } else {
       a = M.multiDoubleProb(rows, pr.kind === "dd" ? 2 : 3);
       b = M.perMinuteMultiDouble(rows, pr.kind === "dd" ? 2 : 3);
     }
     if (!a && !b) continue;
-    const under = pr.side === "under";
     const flip = (p) => (finite(p) ? 1 - p : p);          // models give P(at least threshold); an under is the rest
+    const hits = (vs) => (vs.length ? vs.filter((x) => (x.v >= pr.threshold) !== under).length / vs.length : null);
+    const h2h = values.filter((x) => (x.oppId && x.oppId === oppTeam.id) || (!x.oppId && x.opp === oppTeam.abbr));
     const out = injury && /out/i.test(injury.status);
-    const what = pr.kind !== "prop" ? pr.label : finite(pr.line) ? `${under ? "Under" : "Over"} ${pr.line} ${pr.label}` : `${pr.threshold}+ ${pr.label}`;
+    const what = pr.kind !== "prop" ? pr.label : finite(pr.line) ? `${under ? "Under" : "Over"} ${pr.line} ${pr.label}` : pr.threshold === 1 && /TD/.test(pr.label) ? pr.label : `${pr.threshold}+ ${pr.label}`;
     const leg = finalize({
-      id: `${eventId}|${pr.kind}|${pr.athleteId}|${pr.stats.join("+") || pr.kind}|${pr.threshold}|${under ? "u" : "o"}${finite(pr.line) ? pr.line : ""}`,
+      id: `${S.sport}|${eventId}|${pr.kind}|${pr.athleteId}|${pr.stats.join("+") || pr.kind}|${pr.threshold}|${under ? "u" : "o"}${finite(pr.line) ? pr.line : ""}`,
       eventId, kind: pr.kind, side: under ? "under" : undefined, line: pr.line, athleteId: pr.athleteId, teamId: info.teamId,
       stats: pr.stats, threshold: pr.threshold, statLabel: pr.label, american: pr.american, what,
-      label: `${info.short} ${what}`,
+      label: `${info.short} ${what}`, player: info.name, pos: info.pos, headshot: info.headshot,
+      team: info.teamId === g.home.id ? g.home.abbr : g.away.abbr, opp: oppTeam.abbr,
       game: `${g.away.abbr} @ ${g.home.abbr}`, start: g.date, pBook: M.impliedProb(pr.american),
-      detail: { mean: a?.mean ?? b?.mean, projMin: b?.projMin, n: a?.n ?? b?.n ?? rows.length,
-        hitSeason: under ? flip(a?.hitSeason) : a?.hitSeason, hitL10: under ? flip(a?.hitL10) : a?.hitL10, confidence: a?.confidence || "medium" },
+      detail: {
+        mean: a?.mean ?? b?.mean, projMin: b?.projMin, n: a?.n ?? b?.n ?? rows.length, confidence: a?.confidence || "medium",
+        hitSeason: hits(values) ?? (under ? flip(a?.hitSeason) : a?.hitSeason), hitL10: hits(values.slice(0, 10)) ?? (under ? flip(a?.hitL10) : a?.hitL10),
+        hitL5: hits(values.slice(0, 5)), hitL20: hits(values.slice(0, 20)),
+        h2h: h2h.length ? hits(h2h) : null, h2hN: h2h.length,
+        avg10: values.length ? values.slice(0, 10).reduce((s, x) => s + x.v, 0) / Math.min(10, values.length) : null,
+        last: values.slice(0, 20),
+      },
       injury: injury?.status || "",
     }, under ? flip(a?.p) : a?.p, under ? flip(b?.p) : b?.p, finite(pr.fair) ? pr.fair : M.fairOneSided(pr.american), 0.35);
     if (out) leg.pModel = 0;
@@ -298,26 +415,51 @@ async function loadProps(eventId, onProgress) {
 }
 
 // ---------------- grading ----------------
+/** Fetch the final result for one leg's event, whatever the sport. */
+async function resultFor(sportId, eventId, leg) {
+  const sp = SPORTS[sportId];
+  if (!sp) return null;
+  if (sp.kind === "espn") return D.parseSummary(await D.getJSON(D.URLS.summary(eventId, sp), 0), sp);
+  if (sp.kind === "tennis") {
+    const base = validDate(leg.start) ? new Date(leg.start) : new Date();
+    for (const shift of [0, 1, -1]) {                    // ESPN files matches by US Eastern date
+      const d = new Date(base.getTime() + shift * 864e5);
+      for (const tour of [leg.tour || "atp", leg.tour === "wta" ? "atp" : "wta"]) {
+        const m = D.parseTennis(await D.getJSON(D.URLS.tennisScoreboard(tour, ymd(d)), 0).catch(() => ({})), tour).find((x) => x.id === eventId);
+        if (m) return { completed: m.completed, canceled: m.canceled, winnerId: m.winnerId };
+      }
+    }
+    return null;
+  }
+  if (sp.kind === "esports") {
+    const data = D.parseEsports(await D.getJSON(new URL(sp.data, location.href).href, 0, { source: "the esports feed" }));
+    const m = data.matches.find((x) => x.id === eventId);
+    return m ? { completed: m.completed, canceled: m.canceled, winnerId: m.winnerId, draw: !m.winnerId && m.completed } : null;
+  }
+  return null;
+}
+
 let grading = false;
 async function gradePending({ quiet = true } = {}) {
   if (grading) return;
   const pending = S.bets.filter((b) => b.status === "pending");
-  // Background checks skip games that haven't tipped off yet; a manual check asks about everything
+  // Background checks skip games that haven't started yet; a manual check asks about everything
   const started = (l) => !quiet || !l.start || !validDate(l.start) || new Date(l.start) <= new Date();
-  const events = [...new Set(pending.flatMap((b) => b.legs.filter((l) => (!l.result || l.result === "pending") && started(l)).map((l) => l.eventId)))];
-  if (!events.length) { if (!quiet) toast("Nothing waiting on results"); return; }
+  const todo = new Map();
+  for (const b of pending) for (const l of b.legs) if ((!l.result || l.result === "pending") && started(l)) todo.set(`${l.sport || "nba"}|${l.eventId}`, l);
+  if (!todo.size) { if (!quiet) toast("Nothing waiting on results"); return; }
   grading = true;
   try {
     const results = {};
-    await D.pool(events, 4, async (id) => { results[id] = D.parseSummary(await D.getJSON(D.URLS.summary(id), 0)); });
+    await D.pool([...todo.entries()], 4, async ([key, leg]) => { results[key] = await resultFor(leg.sport || "nba", leg.eventId, leg); });
     let changed = 0;
     for (const b of pending) {
       for (const l of b.legs) {
         if (l.result && l.result !== "pending") continue;
-        const res = results[l.eventId];
+        const res = results[`${l.sport || "nba"}|${l.eventId}`];
         const r = M.gradeLeg(l, res);
         if (r !== "pending") { l.result = r; changed++; }
-        if (res?.completed && !res.canceled && l.athleteId) {
+        if (res?.completed && !res.canceled && l.athleteId && res.players) {
           const p = res.players[l.athleteId];
           if (p && !p.dnp) l.actual = l.kind === "prop" ? l.stats.reduce((s, k) => s + (p[k] || 0), 0) : `${p.pts}/${p.reb}/${p.ast}`;
         }
@@ -336,11 +478,12 @@ let renderSeq = 0;
 
 function render() {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
+  document.querySelectorAll("[data-sport]").forEach((b) => { b.classList.toggle("on", b.dataset.sport === S.sport); b.setAttribute("aria-pressed", String(b.dataset.sport === S.sport)); });
   const d = dayDate();
   $("#dayLabel").textContent = S.dayOffset === 0 ? "Today" : S.dayOffset === 1 ? "Tomorrow" : S.dayOffset === -1 ? "Yesterday" : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
   saveSlip();
   const seq = ++renderSeq;
-  const fn = { games: renderGames, props: renderProps, slip: renderSlip, tracker: renderTracker, news: renderNews }[S.tab] || renderGames;
+  const fn = { games: renderGames, finder: renderFinder, props: renderProps, slip: renderSlip, tracker: renderTracker, news: renderNews }[S.tab] || renderGames;
   // A bug in one screen must never blank the app
   Promise.resolve().then(fn).catch((e) => {
     console.error(e);
@@ -378,10 +521,15 @@ function injuryLine(team) {
   return `<div class="inj-line"><b>${esc(team.abbr)}</b>${list.slice(0, 5).map((p) => `<span class="tag ${statusClass(p.status)}">${esc(lastName(p.name))} · ${esc(p.status)}</span>`).join("")}${list.length > 5 ? `<span class="muted small">+${list.length - 5}</span>` : ""}${impact >= 0.5 ? `<span class="muted small">≈ −${impact.toFixed(1)} pts</span>` : ""}</div>`;
 }
 
+const OFFSEASON = { mlb: "MLB is in its offseason. Spring training starts in late February.", nfl: "No NFL games on this date. Games are mostly Thursday, Sunday and Monday.", tennis: "No singles matches on ESPN for this date. The tour is quiet from late November to January." };
+
 function renderGames() {
-  if (S.loading) return (view().innerHTML = head("Tonight's slate", "Loading games, odds and injuries…") + skeleton());
-  if (S.error) return (view().innerHTML = head("Tonight's slate") + errorHtml());
-  if (!S.games.length) return (view().innerHTML = head("No games") + `<div class="card empty"><strong>Nothing on this date</strong>No NBA games scheduled. Use the arrows up top to change day.</div>`);
+  const sp = sport();
+  const title = sp.kind === "espn" ? (S.dayOffset === 0 ? "Tonight's slate" : "Slate") : sp.name;
+  if (S.loading) return (view().innerHTML = head(title, `Loading ${sp.name}…`) + skeleton());
+  if (S.error) return (view().innerHTML = head(title) + errorHtml());
+  if (sp.kind !== "espn") return renderMatches();
+  if (!S.games.length) return (view().innerHTML = head("No games") + `<div class="card empty"><strong>Nothing on this date</strong>${esc(OFFSEASON[sp.id] || `No ${sp.name} games scheduled.`)} Use the arrows up top to change day.</div>`);
   const upcoming = S.games.filter((g) => g.state === "pre").length;
   const html = S.games.map((g) => {
     const legs = gameLegs(g), { A, B } = projections(g);
@@ -415,20 +563,61 @@ function renderGames() {
       ${winBar}${markets}${algo}${inj ? `<div class="inj">${inj}</div>` : ""}
     </article>`;
   }).join("");
-  view().innerHTML = head(S.dayOffset === 0 ? "Tonight's slate" : "Slate", `${S.games.length} game${S.games.length > 1 ? "s" : ""}${upcoming ? ` · ${upcoming} still to play` : ""}`)
-    + `<div class="legend"><span><b class="dot-model"></b>model %</span><span><span class="chk ok">✓</span> both algorithms agree</span><span><span class="chk split">≠</span> they disagree</span></div>`
+  view().innerHTML = head(title, `${sp.name} · ${S.games.length} game${S.games.length > 1 ? "s" : ""}${upcoming ? ` · ${upcoming} still to play` : ""}`)
+    + `<div class="row between"><div class="legend"><span><b class="dot-model"></b>model %</span><span><span class="chk ok">✓</span> agree</span><span><span class="chk split">≠</span> disagree</span></div><button class="ghost-pill" data-tab="news">Injuries</button></div>`
     + html + `<p class="disclaimer">For entertainment. 21+. Gambling problem? Call 1-800-GAMBLER.</p>`;
 }
+
+/** Tennis and esports: head-to-head match cards with a "to win" pick for each side. */
+function renderMatches() {
+  const sp = sport();
+  const isTennis = sp.id === "tennis";
+  let list = S.matches;
+  const titles = isTennis ? [] : [...new Set(S.matches.map((m) => m.gameName))].sort();
+  if (!isTennis && S.esportsGame !== "all") list = list.filter((m) => m.gameName === S.esportsGame);
+  const sub = isTennis ? "ATP & WTA singles · ranking models" : `${S.esportsMeta?.updated ? `Data updated ${ago(S.esportsMeta.updated)}` : ""}`;
+  if (S.esportsMeta?.error) return (view().innerHTML = head(sp.name) + `<div class="card empty"><strong>Esports isn't set up yet</strong>Add your PandaScore key as the PANDASCORE_TOKEN secret in the GitHub repo (see README). The site rebuilds every 30 minutes.</div>`);
+  if (!S.matches.length) return (view().innerHTML = head(sp.name, sub) + `<div class="card empty"><strong>No matches on this date</strong>${esc(OFFSEASON[sp.id] || "Nothing scheduled in the feed for this day.")} Use the arrows up top to change day.</div>`);
+  const cards = list.map((m) => {
+    const legs = matchLegs(m);
+    remember(legs);
+    const sides = isTennis ? m.players : m.teams;
+    const live = m.state === "in", post = m.state === "post";
+    const row = (p, i) => {
+      const leg = legs[i];
+      const won = post && (isTennis ? p.winner : m.winnerId === p.id);
+      const score = isTennis ? p.sets.join(" ") : m.score?.length === 2 ? m.score[i] : "";
+      return `<div class="team${post && !won ? " lost" : ""}">
+        <span class="logo" style="--tc:#667">${(isTennis ? p.flag : p.logo) ? `<img src="${safeUrl(isTennis ? p.flag : p.logo)}" alt="" loading="lazy" onerror="this.remove()">` : ""}</span>
+        <div class="nm">${esc(p.name)}<span class="rec">${esc(leg?.detail?.line || "")}</span></div>
+        ${leg ? `<button class="pick mini${inSlip(leg.id) ? " in" : ""}" data-leg="${esc(leg.id)}" aria-pressed="${inSlip(leg.id)}" aria-label="${esc(leg.label)}, model ${pct(leg.pModel)}"><span class="od num">${M.fmtAmerican(leg.american)}</span><span class="pm num">${pct(leg.pModel)}${checkChip(leg, true)}</span></button>` : `<div class="sc num">${esc(score)}</div>`}
+      </div>`;
+    };
+    return `<article class="card game">
+      <div class="row between"><span class="status${live ? " live" : ""}">${live ? '<i class="pulse"></i>' : ""}${esc(m.state === "pre" ? timeOf(m.date) : m.detail || (post ? "Final" : live ? "Live" : ""))}</span>
+        <span class="small muted" style="text-align:right">${esc(isTennis ? `${m.tournament} · ${m.round}` : `${m.gameName} · ${m.league}${m.bestOf ? ` · Bo${m.bestOf}` : ""}`)}</span></div>
+      <div class="teams">${sides.map(row).join("")}</div>
+      ${legs.length ? `<div class="small muted">No sportsbook feed: prices shown are the model's fair odds. Enter your book's price in the slip.</div>` : m.state === "pre" ? `<div class="small muted">No pick: ${isTennis ? "neither player is in the top-150 rankings" : "neither team has recent results"}, so there's nothing to rate them on.</div>` : ""}
+    </article>`;
+  }).join("");
+  view().innerHTML = head(sp.name, sub)
+    + (titles.length > 1 ? `<div class="seg scroll">${["all", ...titles].map((t) => `<button class="${S.esportsGame === t ? "on" : ""}" data-egame="${esc(t)}">${esc(t === "all" ? "All titles" : t)}</button>`).join("")}</div>` : "")
+    + (cards || `<div class="card empty"><strong>No ${esc(S.esportsGame)} matches</strong>Pick another title.</div>`)
+    + `<p class="disclaimer">${isTennis ? "Season model: ranking points. Form model: ranking position." : "Season model: Elo from the last ~300 results per title. Form model: last-10 record."} Both are shown; ✓ when they agree.</p>`;
+}
+
+const noPropsHtml = () => `<div class="card empty"><strong>No player props for ${esc(sport().name)}</strong>${sport().id === "tennis" ? "Tennis picks are match winners: see the Games tab." : "Esports picks are match winners: see the Games tab."}</div>`;
 
 async function renderProps() {
   if (S.loading) return (view().innerHTML = head("Player props") + skeleton(2));
   if (S.error) return (view().innerHTML = head("Player props") + errorHtml());
+  if (sport().kind !== "espn") return (view().innerHTML = head("Player props") + noPropsHtml());
   const upcoming = S.games.filter((g) => g.state === "pre");
   if (!upcoming.length) return (view().innerHTML = head("Player props") + `<div class="card empty"><strong>No props right now</strong>Props show for games that haven't started. Try tomorrow with the arrows up top.</div>`);
   if (!upcoming.some((g) => g.id === S.propGame)) S.propGame = upcoming[0].id;
   const chips = `<div class="seg scroll">${upcoming.map((g) => `<button class="${g.id === S.propGame ? "on" : ""}" data-pgame="${esc(g.id)}">${esc(g.away.abbr)} @ ${esc(g.home.abbr)}</button>`).join("")}</div>`;
   const id = S.propGame;
-  const top = head("Player props", "DraftKings ladders, scored by both algorithms") + chips;
+  const top = head("Player props", `${sport().name} · DraftKings lines, scored by both algorithms`) + chips;
   if (!S.propLegs[id]) {
     view().innerHTML = top + loadingHtml("Pulling prop lines and player game logs…", 0);
     try {
@@ -457,12 +646,11 @@ async function renderProps() {
   const cards = players.map(({ aid, ls }) => {
     const info = S.rosters[g.home.id]?.[aid] || S.rosters[g.away.id]?.[aid];
     if (!info) return "";
-    const rows = S.gamelogs[aid] || [];
+    const rows = logsOf(aid);
     const teamAbbr = info.teamId === g.home.id ? g.home.abbr : g.away.abbr;
     const inj = ls[0].injury;
-    const l10 = rows.slice(0, 10).reverse();
     const firstProp = ls.find((l) => l.kind === "prop");
-    const vals = firstProp ? l10.map((r) => firstProp.stats.reduce((s, k) => s + (r[k] || 0), 0)) : [];
+    const vals = firstProp ? (firstProp.detail?.last || []).slice(0, 10).reverse().map((x) => x.v) : [];
     const maxV = Math.max(1, ...vals);
     const spark = firstProp && vals.length ? `<div class="spark-row"><div class="spark" role="img" aria-label="Last ${vals.length} games of ${esc(firstProp.statLabel)}">${vals.map((v) => `<i class="${(v >= firstProp.threshold) !== (firstProp.side === "under") ? "hit" : ""}" style="height:${Math.max(10, (v / maxV) * 100)}%"></i>`).join("")}</div><span class="small muted">last ${vals.length} · ${esc(firstProp.what || firstProp.statLabel)}</span></div>` : "";
     const teammatesOut = (S.injuries[info.teamId] || []).filter((p) => /out/i.test(p.status) && p.athleteId !== aid).map((p) => lastName(p.name));
@@ -471,15 +659,15 @@ async function renderProps() {
       <div class="player-hd"><span class="avatar">${info.headshot ? `<img src="${safeUrl(info.headshot)}" alt="" loading="lazy" onerror="this.remove()">` : ""}<b>${esc((info.name || "?")[0])}</b></span>
         <div style="min-width:0"><div class="nm">${esc(info.name)} ${inj ? `<span class="tag ${statusClass(inj)}">${esc(inj)}</span>` : ""}</div>
         <div class="small muted">${esc(teamAbbr)} · ${esc(info.pos)}${info.jersey ? ` · #${esc(info.jersey)}` : ""}</div></div></div>
-      <div class="stat-strip num"><span><b>${avg(l10r, "pts").toFixed(1)}</b>PTS</span><span><b>${avg(l10r, "reb").toFixed(1)}</b>REB</span><span><b>${avg(l10r, "ast").toFixed(1)}</b>AST</span><span><b>${avg(l10r, "tpm").toFixed(1)}</b>3PM</span><span><b>${avg(l10r, "min").toFixed(0)}</b>MIN</span></div>
+      <div class="stat-strip num" style="grid-template-columns:repeat(${sport().statCols.length},1fr)">${sport().statCols.map(([k, lab]) => { const v = avg(l10r, k); return `<span><b>${v >= 20 ? v.toFixed(0) : v.toFixed(1)}</b>${lab}</span>`; }).join("")}</div>
       ${spark}
       ${teammatesOut.length ? `<div class="small muted">Teammates out: ${esc(teammatesOut.join(", "))}</div>` : ""}
       <div class="rungs">${ls.map((l) => `
         <div class="rung"><div class="what"><b>${esc(l.what || l.statLabel)}</b>
           <div class="small muted">${finite(l.detail?.hitL10) ? `L10 ${pct(l.detail.hitL10)} · ` : ""}${finite(l.detail?.mean) ? `proj ${l.detail.mean.toFixed(1)}` : ""}${l.detail?.confidence === "low" ? " · small sample" : ""}</div>
           <div class="chk-row">${checkChip(l)}</div></div>
-          <div class="od num">${M.fmtAmerican(l.american)}</div>
-          <div class="pm num"><b>${pct(l.pModel)}</b><span class="small muted">book ${pct(l.pBook)}</span></div>
+          <div class="od num">${M.fmtAmerican(l.american)}${l.priceSource === "model" ? '<small class="fair">fair</small>' : ""}</div>
+          <div class="pm num"><b>${pct(l.pModel)}</b><span class="small muted">${l.priceSource === "model" ? "no price yet" : `book ${pct(l.pBook)}`}</span></div>
           <button class="add${inSlip(l.id) ? " in" : ""}" data-leg="${esc(l.id)}" aria-pressed="${inSlip(l.id)}" aria-label="${inSlip(l.id) ? "Remove" : "Add"} ${esc(l.label)}">${inSlip(l.id) ? "✓" : "+"}</button></div>`).join("")}</div>
     </article>`;
   }).join("");
@@ -490,7 +678,111 @@ async function renderProps() {
       <div class="seg">${[["likely", "Likely"], ["verified", "Verified"], ["value", "Vs book"]].map(([k, t]) => `<button class="${S.propSort === k ? "on" : ""}" data-sort="${k}">${t}</button>`).join("")}</div>
     </div>
     ${cards || `<div class="card empty"><strong>Nothing matches</strong>Try another stat.</div>`}
-    <p class="disclaimer">Season model: recency-weighted game logs + opponent defense. Form model: per-minute rate × current minutes. Final % blends both with the book price.</p>`;
+    <p class="disclaimer">Season model: recency-weighted game logs${sport().oppAdjust?.length ? " + opponent defense" : ""}. Form model: rate per ${sport().id === "nba" ? "minute" : "opportunity"} × current role, or last-5 form. Final % blends both with the book price. "fair" = the book hasn't priced it yet.</p>`;
+}
+
+// ---------------- Finder: every prop on the slate in one sortable research table ----------------
+async function loadFinder() {
+  const token = S.loadToken;
+  const upcoming = S.games.filter((g) => g.state === "pre");
+  S.finderLoading = 0; render();
+  const all = [];
+  let done = 0;
+  for (const g of upcoming) {
+    try { all.push(...(await loadProps(g.id))); } catch { /* a game without props */ }
+    if (token !== S.loadToken) return;
+    S.finderLoading = ++done / Math.max(1, upcoming.length);
+    if (S.tab === "finder") { const b = $(".bar i"); if (b) b.style.width = `${Math.round(S.finderLoading * 100)}%`; }
+  }
+  S.finderLegs = all.filter((l) => l.kind === "prop" && l.pModel > 0);
+  S.finderLoading = null;
+  if (S.tab === "finder") render();
+}
+
+const FINDER_COLS = [
+  ["l5", "L5", (l) => l.detail.hitL5], ["l10", "L10", (l) => l.detail.hitL10], ["l20", "L20", (l) => l.detail.hitL20],
+  ["szn", "Season", (l) => l.detail.hitSeason], ["h2h", "H2H", (l) => l.detail.h2h], ["model", "Model", (l) => l.pModel],
+  ["odds", "Odds", (l) => M.toDecimal(l.american)],
+];
+const hitCls = (p) => (!finite(p) ? "" : p >= 0.7 ? "hot" : p >= 0.5 ? "warm" : "cold");
+
+function finderRows() {
+  const f = S.finder;
+  let rows = S.finderLegs || [];
+  if (f.stat !== "All") rows = rows.filter((l) => l.statLabel === f.stat);
+  if (f.side === "over") rows = rows.filter((l) => l.side !== "under");
+  if (f.side === "under") rows = rows.filter((l) => l.side === "under");
+  if (f.minHit) rows = rows.filter((l) => finite(l.detail.hitL10) && l.detail.hitL10 >= f.minHit);
+  if (f.verifiedOnly) rows = rows.filter((l) => l.verified);
+  if (f.q.trim()) { const q = f.q.trim().toLowerCase(); rows = rows.filter((l) => `${l.player} ${l.team} ${l.opp}`.toLowerCase().includes(q)); }
+  const col = FINDER_COLS.find((c) => c[0] === f.sort) || FINDER_COLS[1];
+  const key = (l) => { const v = col[2](l); return finite(v) ? v : -Infinity; };
+  const cmp = (a, b) => { const x = key(a), y = key(b); return x === y ? 0 : x < y ? -1 : 1; };   // -Infinity (no data) sorts last when descending
+  return rows.slice().sort((a, b) => (f.dir < 0 ? cmp(b, a) : cmp(a, b)) || (b.pModel - a.pModel));
+}
+
+function finderChart(l) {
+  const vals = (l.detail.last || []).slice().reverse();
+  if (!vals.length) return `<div class="small muted">No game log.</div>`;
+  const line = finite(l.line) ? l.line : l.threshold - 0.5;
+  const maxV = Math.max(line * 1.4, ...vals.map((x) => x.v), 1);
+  return `<div class="fchart" role="img" aria-label="Last ${vals.length} games against the line ${line}">
+    <i class="fline" style="bottom:${(line / maxV) * 100}%"><span>${line}</span></i>
+    ${vals.map((x) => `<div class="fcol"><b class="${(x.v >= l.threshold) !== (l.side === "under") ? "hit" : ""}" style="height:${Math.max(3, (x.v / maxV) * 100)}%"><em>${esc(Number.isInteger(x.v) ? x.v : x.v.toFixed(1))}</em></b><small>${esc(x.opp || "")}</small></div>`).join("")}
+  </div>`;
+}
+
+async function renderFinder() {
+  const sp = sport();
+  const top = head("Prop Finder", `${sp.name} · every prop on the slate, ranked by how often it has hit`);
+  if (S.loading) return (view().innerHTML = top + skeleton(2));
+  if (S.error) return (view().innerHTML = top + errorHtml());
+  if (sp.kind !== "espn") return (view().innerHTML = top + noPropsHtml());
+  if (!S.games.some((g) => g.state === "pre")) return (view().innerHTML = top + `<div class="card empty"><strong>No upcoming ${esc(sp.name)} games</strong>The Finder scans props for games that haven't started. Try another day with the arrows up top.</div>`);
+  if (!S.finderLegs) {
+    view().innerHTML = top + loadingHtml("Scanning every game's props and player logs…", S.finderLoading ?? 0);
+    if (S.finderLoading === null) loadFinder();
+    return;
+  }
+  remember(S.finderLegs);
+  const f = S.finder;
+  const stats = ["All", ...new Set(S.finderLegs.map((l) => l.statLabel))];
+  if (!stats.includes(f.stat)) f.stat = "All";
+  const rows = finderRows();
+  const shown = rows.slice(0, f.limit);
+  const th = (c) => `<th><button class="sort${f.sort === c[0] ? " on" : ""}" data-fsort="${c[0]}" aria-label="Sort by ${c[1]}">${c[1]}${f.sort === c[0] ? (f.dir < 0 ? " ↓" : " ↑") : ""}</button></th>`;
+  const cell = (p, n) => `<td class="hit ${hitCls(p)}">${pct(p)}${n !== undefined && n ? `<small>${n}g</small>` : ""}</td>`;
+  const body = shown.map((l) => {
+    const open = f.open === l.id;
+    return `<tr class="frow${open ? " open" : ""}" data-fopen="${esc(l.id)}">
+        <td class="who"><b>${esc(l.player)}</b><small>${esc(l.team)} vs ${esc(l.opp)}${l.injury ? ` · <span class="tag ${statusClass(l.injury)}">${esc(l.injury)}</span>` : ""}</small></td>
+        <td class="prop">${esc(l.what)}<small>avg ${finite(l.detail.avg10) ? l.detail.avg10.toFixed(1) : "—"} L10</small></td>
+        ${cell(l.detail.hitL5)}${cell(l.detail.hitL10)}${cell(l.detail.hitL20)}${cell(l.detail.hitSeason)}${cell(l.detail.h2h, l.detail.h2hN)}
+        <td class="mdl"><b>${pct(l.pModel)}</b>${checkChip(l, true)}</td>
+        <td class="odds num">${M.fmtAmerican(l.american)}${l.priceSource === "model" ? "<small>fair</small>" : ""}</td>
+      </tr>${open ? `<tr class="fdetail"><td colspan="9">
+        <div class="fdetail-in">
+          ${finderChart(l)}
+          <div class="row between wrap">
+            <span class="small muted">Season model ${pct(l.pA)} · Form model ${pct(l.pB)}${l.priceSource === "model" ? " · not priced by the book yet" : ` · book ${pct(l.pBook)}`}${finite(l.detail.projMin) ? ` · projected volume ${l.detail.projMin.toFixed(1)}` : ""}</span>
+            <button class="btn${inSlip(l.id) ? "" : " primary"}" data-leg="${esc(l.id)}">${inSlip(l.id) ? "Remove from slip" : "Add to slip"}</button>
+          </div>
+        </div></td></tr>` : ""}`;
+  }).join("");
+  view().innerHTML = `${top}
+    <div class="finder-bar">
+      <input type="search" id="fq" placeholder="Search player or team" value="${esc(f.q)}" aria-label="Search player or team" autocomplete="off">
+      <label class="select"><span class="sr">Stat</span><select id="fstat">${stats.map((s) => `<option${s === f.stat ? " selected" : ""}>${esc(s)}</option>`).join("")}</select></label>
+    </div>
+    <div class="seg scroll">${[["all", "Overs + unders"], ["over", "Overs"], ["under", "Unders"]].map(([k, t]) => `<button class="${f.side === k ? "on" : ""}" data-fside="${k}">${t}</button>`).join("")}
+      ${[[0, "Any L10"], [0.6, "L10 60%+"], [0.7, "70%+"], [0.8, "80%+"]].map(([v, t]) => `<button class="${f.minHit === v ? "on" : ""}" data-fmin="${v}">${t}</button>`).join("")}</div>
+    <label class="switch"><input type="checkbox" id="fverified" ${f.verifiedOnly ? "checked" : ""}><span></span>Only picks both algorithms agree on</label>
+    <div class="small muted">${rows.length} prop${rows.length === 1 ? "" : "s"}${rows.length > shown.length ? ` · showing ${shown.length}` : ""} · tap a row for the game-by-game chart</div>
+    ${rows.length ? `<div class="ftable-wrap"><table class="ftable num">
+      <thead><tr><th class="who">Player</th><th>Prop</th>${FINDER_COLS.map(th).join("")}</tr></thead>
+      <tbody>${body}</tbody></table></div>` : `<div class="card empty"><strong>Nothing matches</strong>Loosen a filter.</div>`}
+    ${rows.length > shown.length ? `<button class="btn block" data-act="fmore">Show ${Math.min(60, rows.length - shown.length)} more</button>` : ""}
+    <p class="disclaimer">Hit rates count how often the player cleared this exact line in past games (H2H = against this opponent). Past hit rates don't guarantee future results.</p>`;
 }
 
 function renderSlip() {
@@ -519,6 +811,7 @@ function renderSlip() {
   const warn = [];
   if (math.sameGame) warn.push("Same-game legs are often correlated, so the real odds differ from the multiplied price. Books price same-game parlays differently.");
   if (legs.some((l) => l.verified === false)) warn.push("Some legs are Split: the two algorithms disagree, so their % is less reliable.");
+  if (legs.some((l) => l.priceSource === "model")) warn.push("Some legs have no sportsbook price (tennis, esports, or props not priced yet). They show the model's fair odds, so the payout and EV here are placeholders: type in your book's price.");
   if (legs.some((l) => l.detail?.confidence === "low")) warn.push("Some legs rest on only a few games.");
   const perPlayer = legs.filter((l) => l.athleteId).reduce((m, l) => m.set(l.athleteId, (m.get(l.athleteId) || 0) + 1), new Map());
   if ([...perPlayer.values()].some((n) => n > 1)) warn.push("More than one leg on the same player: those legs rise and fall together, so the real hit chance is not the multiplied one.");
@@ -560,8 +853,9 @@ async function buildSuggestions() {
     if (S.loading) throw new Error("Games are still loading. Try again in a moment.");
     const upcoming = S.games.filter((g) => g.state === "pre" && (!validDate(g.date) || new Date(g.date) > new Date()));
     let cands = [];
-    if (S.scope !== "props") for (const g of upcoming) cands.push(...Object.values(gameLegs(g)));
-    if (S.scope !== "lines") {
+    if (sport().kind !== "espn") cands.push(...S.matches.filter((m) => m.state === "pre" && validDate(m.date) && new Date(m.date) > new Date()).flatMap(matchLegs));
+    else if (S.scope !== "props") for (const g of upcoming) cands.push(...Object.values(gameLegs(g)));
+    if (S.scope !== "lines" && sport().kind === "espn") {
       let done = 0;
       for (const g of upcoming) {
         try { cands.push(...(await loadProps(g.id))); } catch { /* game without props */ }
@@ -616,6 +910,7 @@ function renderTracker() {
     <h2>Parlays vs straights</h2>
     <div class="row between"><span>Parlays</span><b class="num">${st.parlay.wins}-${st.parlay.losses}</b></div>
     <div class="row between"><span>Straight bets</span><b class="num">${st.straight.wins}-${st.straight.losses}</b></div>
+    ${Object.keys(st.bySport).length > 1 ? `<h3>Hit rate by sport</h3>${Object.entries(st.bySport).map(([k, v]) => `<div class="hbar"><span>${esc(SPORTS[k]?.name || k)}</span><div class="track"><i style="width:${(v.hits / v.total) * 100}%"></i></div><span class="num small">${v.hits}/${v.total}</span></div>`).join("")}` : ""}
     ${Object.keys(st.byKind).length ? `<h3>Hit rate by bet type</h3>${Object.entries(st.byKind).map(([k, v]) => `<div class="hbar"><span>${esc(k)}</span><div class="track"><i style="width:${(v.hits / v.total) * 100}%"></i></div><span class="num small">${v.hits}/${v.total}</span></div>`).join("")}` : ""}
     ${st.buckets.some((b) => b.n) ? `<h3>Is the model honest?</h3><div class="small muted">Legs grouped by predicted chance vs how often they hit.</div>
       <div class="tbl"><table class="compare num"><thead><tr><th>Model said</th><th>Legs</th><th>Hit</th></tr></thead><tbody>
@@ -635,10 +930,14 @@ function renderTracker() {
 }
 
 async function renderNews() {
+  const sp = sport();
+  if (sp.kind !== "espn") return (view().innerHTML = head("Injuries & trades") + `<div class="card empty"><strong>Not tracked for ${esc(sp.name)}</strong>Injury reports and trades cover the NBA, NFL and MLB.</div>`);
+  if (S.loading) return (view().innerHTML = head("Injuries & trades", sp.name) + skeleton(2));
   if (S.transactions === null) {
-    view().innerHTML = head("Injuries & trades") + loadingHtml("Loading injuries and trades…");
-    try { S.transactions = D.parseTransactions(await D.getJSON(D.URLS.transactions(), 600_000)); } catch { S.transactions = []; }
-    if (S.tab !== "news") return;
+    view().innerHTML = head("Injuries & trades", sp.name) + loadingHtml("Loading injuries and trades…");
+    const want = S.sport;
+    try { S.transactions = D.parseTransactions(await D.getJSON(D.URLS.transactions(sp), 600_000)); } catch { S.transactions = []; }
+    if (S.tab !== "news" || S.sport !== want) return;
   }
   const playing = new Set(S.games.flatMap((g) => [g.home.id, g.away.id]));
   const teams = Object.entries(S.injuries).filter(([id, l]) => l.length && (S.newsFilter === "all" || playing.has(id)));
@@ -649,7 +948,7 @@ async function renderNews() {
         <div class="small muted">${esc(p.comment)}${p.returnDate && validDate(p.returnDate) ? ` Est. return ${esc(shortDate(p.returnDate))}.` : ""}${p.date ? ` · ${esc(ago(p.date))}` : ""}</div></div>`).join("")}
     </section>`).join("");
   const txItem = (t) => `<div class="news-item tx">${t.logo ? `<img src="${safeUrl(t.logo)}" alt="" loading="lazy" onerror="this.remove()">` : "<span></span>"}<div><div>${t.isTrade ? '<span class="tag q">Trade</span> ' : ""}${esc(t.description)}</div><div class="small muted">${esc(t.team)}${t.date ? ` · ${esc(shortDate(t.date))}` : ""}</div></div></div>`;
-  view().innerHTML = head("Injuries & trades") + `
+  view().innerHTML = head("Injuries & trades", sp.name) + `
     <div class="seg"><button class="${S.newsFilter === "today" ? "on" : ""}" data-news="today">On this slate</button><button class="${S.newsFilter === "all" ? "on" : ""}" data-news="all">All teams</button></div>
     ${injHtml || `<div class="card empty"><strong>All clear</strong>No injuries listed${S.newsFilter === "today" ? " for teams on this slate" : ""}.</div>`}
     <h3 class="section">Trades & roster moves</h3>
@@ -683,10 +982,16 @@ function saveBet(type) {
 function goTab(tab) { S.tab = tab; S.confirmDel = null; window.scrollTo(0, 0); render(); if (tab === "tracker") gradePending(); }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("button, [data-tab]");
+  const t = e.target.closest("button, [data-tab], [data-fopen]");
   if (!t || t.disabled) return;
   const d = t.dataset;
   if (d.tab) return goTab(d.tab);
+  if (d.sport) return switchSport(d.sport);
+  if (d.egame) { S.esportsGame = d.egame; return render(); }
+  if (d.fsort) { if (S.finder.sort === d.fsort) S.finder.dir *= -1; else { S.finder.sort = d.fsort; S.finder.dir = -1; } return render(); }
+  if (d.fside) { S.finder.side = d.fside; S.finder.limit = 60; return render(); }
+  if (d.fmin !== undefined) { S.finder.minHit = Number(d.fmin) || 0; S.finder.limit = 60; return render(); }
+  if (d.fopen) { S.finder.open = S.finder.open === d.fopen ? null : d.fopen; return render(); }
   if (d.leg) return toggleLeg(legIndex.get(d.leg));
   if (d.props) { S.propGame = d.props; return goTab("props"); }
   if (d.pgame) { S.propGame = d.pgame; return render(); }
@@ -706,6 +1011,7 @@ document.addEventListener("click", (e) => {
     case "retryProps": delete S.propLegs[S.propGame]; return render();
     case "clear": S.slip = []; return render();
     case "build": return buildSuggestions();
+    case "fmore": S.finder.limit += 60; return render();
     case "grade": return gradePending({ quiet: false });
     case "export": {
       if (!S.bets.length) return toast("No bets to back up yet");
@@ -724,6 +1030,28 @@ document.addEventListener("click", (e) => {
   }
 });
 
+function switchSport(id) {
+  if (!SPORTS[id] || id === S.sport) return;
+  S.sport = id; store.set("cp.sport", id);
+  resetSportData();
+  S.esportsGame = "all";
+  window.scrollTo(0, 0);
+  loadDay();
+}
+
+// Search box: filter as you type without losing the keyboard
+let searchTimer;
+document.addEventListener("input", (e) => {
+  if (e.target.id !== "fq") return;
+  S.finder.q = e.target.value.slice(0, 60); S.finder.limit = 60;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const pos = e.target.selectionStart;
+    render();
+    setTimeout(() => { const i = $("#fq"); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch { /* unsupported */ } } }, 0);
+  }, 200);
+});
+
 document.addEventListener("toggle", (e) => {
   const id = e.target?.dataset?.exp; if (!id) return;
   e.target.open ? S.expanded.add(id) : S.expanded.delete(id);
@@ -732,6 +1060,8 @@ document.addEventListener("toggle", (e) => {
 document.addEventListener("change", (e) => {
   const t = e.target;
   if (t.id === "propStat") { S.propStat = t.value; return render(); }
+  if (t.id === "fstat") { S.finder.stat = t.value; S.finder.limit = 60; return render(); }
+  if (t.id === "fverified") { S.finder.verifiedOnly = t.checked; S.finder.limit = 60; return render(); }
   if (t.id === "verifiedOnly") { S.verifiedOnly = t.checked; S.suggestions = null; return render(); }
   if (t.id === "stake") {
     const v = Number(t.value);
@@ -786,8 +1116,10 @@ async function refreshScores() {
   refreshing = true;
   const token = S.loadToken;
   try {
-    const games = D.parseScoreboard(await D.getJSON(D.URLS.scoreboard(ymd(dayDate())), 30_000)).sort((a, b) => new Date(a.date) - new Date(b.date));
-    if (token === S.loadToken && games.length) { S.games = games; if (S.tab === "games") render(); }
+    const sp = sport();
+    if (sp.kind !== "espn") return;
+    const games = D.parseScoreboard(await D.getJSON(D.URLS.scoreboard(ymd(dayDate()), sp), 30_000)).sort((a, b) => new Date(a.date) - new Date(b.date));
+    if (token === S.loadToken && sp === sport() && games.length) { S.games = games; if (S.tab === "games") render(); }
   } catch { /* keep what we have */ } finally { refreshing = false; }
 }
 

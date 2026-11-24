@@ -303,3 +303,52 @@ select, input[type="number"], input[type="text"] {
   .rung .od { font-size: 14px; min-width: 40px; }
   .hbar { grid-template-columns: 100px 1fr 44px; }
 }
+
+/* ---------- sport switcher ---------- */
+.sports {
+  display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+  padding: 10px max(16px, env(safe-area-inset-right, 0px)) 2px max(16px, env(safe-area-inset-left, 0px)); max-width: 680px; margin: 0 auto;
+}
+.sports::-webkit-scrollbar { display: none; }
+.sports button { flex: none; background: var(--card); border: 1px solid var(--stroke); border-radius: 999px; padding: 7px 14px; font-size: 13.5px; font-weight: 700; color: var(--muted); letter-spacing: .01em; }
+.sports button.on { background: var(--fg); color: var(--bg); border-color: transparent; }
+
+/* tennis / esports pick next to a name */
+.team:has(.pick.mini) { grid-template-columns: 34px 1fr 86px; }
+.pick.mini { padding: 5px 4px 7px; border-radius: 12px; }
+.pick.mini .od { font-size: 15px; }
+.fair { display: block; font: 600 9.5px var(--body); color: var(--split); letter-spacing: .06em; text-transform: uppercase; }
+
+/* ---------- prop finder ---------- */
+.finder-bar { display: flex; gap: 8px; }
+.finder-bar input[type="search"] { flex: 1 1 auto; min-width: 0; background: var(--card); border: 1px solid var(--stroke); color: var(--fg); border-radius: 12px; padding: 10px 12px; font: 500 15px var(--body); }
+.finder-bar .select { flex: 0 1 140px; }
+.ftable-wrap { overflow-x: auto; border: 1px solid var(--stroke); border-radius: 16px; background: var(--card); -webkit-overflow-scrolling: touch; }
+.ftable { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+.ftable th, .ftable td { padding: 9px 8px; text-align: center; white-space: nowrap; border-bottom: 1px solid var(--stroke); }
+.ftable thead th { position: sticky; top: 0; background: var(--solid); font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; z-index: 1; }
+.ftable .who { position: sticky; left: 0; background: var(--solid); text-align: left; z-index: 2; min-width: 128px; max-width: 150px; white-space: normal; }
+.ftable thead .who { z-index: 3; }
+.ftable td.who b { display: block; font-weight: 600; font-size: 13.5px; line-height: 1.2; }
+.ftable small { display: block; color: var(--muted); font-size: 11px; font-weight: 500; }
+.ftable td.prop { text-align: left; font-weight: 600; min-width: 120px; white-space: normal; }
+.sort { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; }
+.sort.on { color: var(--accent); }
+.hit { font-weight: 700; }
+.hit.hot { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.hit.warm { color: var(--split); }
+.hit.cold { color: var(--bad); }
+.ftable td.mdl b { color: var(--model); display: block; }
+.frow { cursor: pointer; }
+.frow:active td, .frow.open td { background: color-mix(in srgb, var(--accent) 8%, var(--solid)); }
+.fdetail td { padding: 0; text-align: left; white-space: normal; }
+.fdetail-in { position: sticky; left: 0; width: min(100vw - 34px, 640px); padding: 12px; display: grid; gap: 10px; }
+.fchart { position: relative; display: flex; align-items: flex-end; gap: 3px; height: 130px; padding-top: 14px; border-bottom: 1px solid var(--stroke-2); }
+.fcol { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; position: relative; }
+.fcol b { display: block; width: 100%; max-width: 22px; border-radius: 4px 4px 0 0; background: var(--bad); opacity: .75; position: relative; }
+.fcol b.hit { background: var(--ok); opacity: .9; }
+.fcol b em { position: absolute; top: -14px; left: 50%; transform: translateX(-50%); font: 600 9.5px var(--body); color: var(--muted); font-style: normal; }
+.fcol small { position: absolute; bottom: -16px; font-size: 8.5px; color: var(--muted); }
+.fline { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--fg); opacity: .55; z-index: 1; }
+.fline span { position: absolute; right: 0; top: -16px; font: 700 10px var(--body); background: var(--solid); padding: 0 4px; border-radius: 4px; }
+.fdetail-in .fchart { margin-bottom: 16px; }

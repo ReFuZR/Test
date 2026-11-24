@@ -65,7 +65,9 @@ describe("happy path", opts, () => {
   test("works at 320px wide and in light mode", () => withApp({ viewport: { width: 320, height: 640 }, colorScheme: "light" }, async ({ page }) => {
     await gamesReady(page);
     assert.ok(await noHorizontalScroll(page));
-    for (const tab of ["props", "slip", "tracker", "news"]) { await page.click(`[data-tab=${tab}]`); await page.waitForTimeout(400); assert.ok(await noHorizontalScroll(page), `overflow on ${tab}`); }
+    for (const tab of ["finder", "props", "slip", "tracker", "games"]) { await page.click(`.tabs [data-tab=${tab}]`); await page.waitForTimeout(tab === "finder" ? 3000 : 400); assert.ok(await noHorizontalScroll(page), `overflow on ${tab}`); }
+    await page.click("main [data-tab=news]"); await page.waitForTimeout(400);
+    assert.ok(await noHorizontalScroll(page), "overflow on injuries");
   }));
 });
 

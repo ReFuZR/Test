@@ -97,20 +97,25 @@ export function consensus(pA, pB, tol = VERIFY_TOLERANCE) {
 // ---------- algorithm A: season model for games ----------
 const validTeam = (t) => t && finite(t.ppg) && finite(t.opp) && finite(t.wins) && finite(t.losses);
 
+/** Sport settings; defaults are the NBA's. hca = home edge in points/runs, sd* = spread of results. */
+const NBA_CFG = { hca: HOME_COURT, sdMargin: SD_MARGIN, sdTotal: SD_TOTAL, shrinkGames: 8 };
+const cfgOf = (c) => ({ ...NBA_CFG, ...(c || {}) });
+
 /** Team strength in points per game vs. average, shrunk toward 0 early in the season. */
-export function teamRating(t) {
+export function teamRating(t, cfg) {
   if (!validTeam(t)) return 0;
-  const gp = t.wins + t.losses;
-  return gp > 0 ? (t.ppg - t.opp) * gp / (gp + 8) : 0;
+  const gp = t.wins + t.losses + (finite(t.ties) ? t.ties : 0);
+  return gp > 0 ? (t.ppg - t.opp) * gp / (gp + cfgOf(cfg).shrinkGames) : 0;
 }
 
 /** Season-based projection. Returns null when either team's numbers are missing. */
-export function projectGame(home, away, { homeInjury = 0, awayInjury = 0 } = {}) {
+export function projectGame(home, away, { homeInjury = 0, awayInjury = 0 } = {}, cfg) {
   if (!validTeam(home) || !validTeam(away)) return null;
+  const c = cfgOf(cfg);
   const hi = finite(homeInjury) ? homeInjury : 0, ai = finite(awayInjury) ? awayInjury : 0;
-  const margin = teamRating(home) - teamRating(away) + HOME_COURT - hi + ai;
+  const margin = teamRating(home, c) - teamRating(away, c) + c.hca - hi + ai;
   const total = (home.ppg + away.opp) / 2 + (away.ppg + home.opp) / 2 - (hi + ai) / 2;
-  return { margin, total, homePts: total / 2 + margin / 2, awayPts: total / 2 - margin / 2, pHome: normCdf(margin / SD_MARGIN) };
+  return { margin, total, homePts: total / 2 + margin / 2, awayPts: total / 2 - margin / 2, pHome: normCdf(margin / c.sdMargin), sdMargin: c.sdMargin, sdTotal: c.sdTotal };
 }
 
 // ---------- algorithm B: recent-form model for games ----------
@@ -118,24 +123,48 @@ export function projectGame(home, away, { homeInjury = 0, awayInjury = 0 } = {})
  * Opponent-adjusted form over the last `n` games.
  * games: [{home: bool, pf, pa, oppId}] most recent first. ratings: {teamId: season rating} to credit tough opponents.
  */
-export function formRating(games, ratings = {}, n = 10) {
+export function formRating(games, ratings = {}, n = 10, cfg) {
+  const c = cfgOf(cfg);
   const g = (games || []).filter((x) => x && finite(x.pf) && finite(x.pa)).slice(0, n);
   if (!g.length) return null;
-  const adj = g.map((x) => (x.pf - x.pa) - (x.home ? HOME_COURT : -HOME_COURT) + (finite(ratings[x.oppId]) ? ratings[x.oppId] : 0));
+  const adj = g.map((x) => (x.pf - x.pa) - (x.home ? c.hca : -c.hca) + (finite(ratings[x.oppId]) ? ratings[x.oppId] : 0));
   return { rating: mean(adj) * g.length / (g.length + 4), pf: mean(g.map((x) => x.pf)), pa: mean(g.map((x) => x.pa)), n: g.length };
 }
 
-export function projectGameForm(homeForm, awayForm, { homeInjury = 0, awayInjury = 0 } = {}) {
+export function projectGameForm(homeForm, awayForm, { homeInjury = 0, awayInjury = 0 } = {}, cfg) {
   if (!homeForm || !awayForm) return null;
+  const c = cfgOf(cfg);
   const hi = finite(homeInjury) ? homeInjury : 0, ai = finite(awayInjury) ? awayInjury : 0;
-  const margin = homeForm.rating - awayForm.rating + HOME_COURT - hi + ai;
+  const margin = homeForm.rating - awayForm.rating + c.hca - hi + ai;
   const total = (homeForm.pf + awayForm.pa) / 2 + (awayForm.pf + homeForm.pa) / 2 - (hi + ai) / 2;
-  return { margin, total, homePts: total / 2 + margin / 2, awayPts: total / 2 - margin / 2, pHome: normCdf(margin / SD_MARGIN) };
+  return { margin, total, homePts: total / 2 + margin / 2, awayPts: total / 2 - margin / 2, pHome: normCdf(margin / c.sdMargin), sdMargin: c.sdMargin, sdTotal: c.sdTotal };
 }
 
 /** Probability the side covers. line is that side's spread (e.g. -4.5); marginForSide is expected margin for that side. */
-export const pCover = (marginForSide, line) => (finite(marginForSide) && finite(line) ? normCdf((marginForSide + line) / SD_MARGIN) : NaN);
-export const pOver = (projTotal, line) => (finite(projTotal) && finite(line) ? normCdf((projTotal - line) / SD_TOTAL) : NaN);
+export const pCover = (marginForSide, line, sd = SD_MARGIN) => (finite(marginForSide) && finite(line) ? normCdf((marginForSide + line) / sd) : NaN);
+export const pOver = (projTotal, line, sd = SD_TOTAL) => (finite(projTotal) && finite(line) ? normCdf((projTotal - line) / sd) : NaN);
+
+// ---------- head-to-head matches with no sportsbook line (tennis, esports) ----------
+/** Tennis algorithm A: ranking points as strength (Bradley-Terry). Players outside the list get a low default. */
+export function tennisPointsProb(ptsA, ptsB) {
+  const a = finite(ptsA) && ptsA > 0 ? ptsA : 250, b = finite(ptsB) && ptsB > 0 ? ptsB : 250;
+  return clamp(a / (a + b), 0.03, 0.97);
+}
+/** Tennis algorithm B: ranking position (log scale), which smooths the points gaps at the very top. */
+export function tennisRankProb(rankA, rankB) {
+  const a = finite(rankA) && rankA > 0 ? rankA : 200, b = finite(rankB) && rankB > 0 ? rankB : 200;
+  return clamp(1 / (1 + Math.pow(a / b, 0.85)), 0.03, 0.97);
+}
+/** Elo win probability. */
+export const eloProb = (ra, rb) => (finite(ra) && finite(rb) ? 1 / (1 + Math.pow(10, (rb - ra) / 400)) : NaN);
+/** Esports algorithm B: recent win rates (shrunk toward 50%), combined head-to-head with log5. */
+export function formProb(winsA, gamesA, winsB, gamesB) {
+  const r = (w, g) => (finite(w) && finite(g) && g >= 0 ? (w + 3) / (g + 6) : 0.5);
+  const a = r(winsA, gamesA), b = r(winsB, gamesB);
+  return clamp((a - a * b) / (a + b - 2 * a * b), 0.03, 0.97);
+}
+/** Fair American price for a probability (no vig): what the model thinks the bet is worth. */
+export const fairAmerican = (p) => (finite(p) && p > 0 && p < 1 ? toAmerican(1 / p) : NaN);
 
 /** Rough margin cost of losing a player, from his scoring and minutes. Capped so one player can't swing a game more than 6 pts. */
 export function injuryImpact({ ppg = 0, rpg = 0, apg = 0, mpg = 0 } = {}) {
@@ -188,18 +217,39 @@ export function multiDoubleProb(rows, cats = 2) {
  * rows: [{min, ...stats}] most recent first. statOf(row) returns the stat for a game.
  */
 export function perMinuteProp(rows, threshold, statOf, oppFactor = 1) {
-  const rs = (rows || []).filter((r) => r && finite(r.min) && r.min > 0 && finite(statOf(r)) && statOf(r) >= 0);
+  return perVolumeProp(rows, threshold, statOf, (r) => r.min, oppFactor);
+}
+
+/**
+ * Same idea for any opportunity stat: rate per opportunity x expected opportunities (minutes in the NBA,
+ * targets/carries/attempts in the NFL, at-bats or outs in MLB). Returns `projMin` for the projected volume.
+ */
+export function perVolumeProp(rows, threshold, statOf, volOf, oppFactor = 1) {
+  const rs = (rows || []).filter((r) => r && finite(volOf(r)) && volOf(r) > 0 && finite(statOf(r)) && statOf(r) >= 0);
   if (rs.length < 3 || !finite(threshold)) return null;
   const w = rs.map((_, i) => Math.pow(0.95, i));
-  const rate = rs.reduce((s, r, i) => s + statOf(r) * w[i], 0) / rs.reduce((s, r, i) => s + r.min * w[i], 0);
-  const projMin = mean(rs.slice(0, 5).map((r) => r.min));
+  const rate = rs.reduce((s, r, i) => s + statOf(r) * w[i], 0) / rs.reduce((s, r, i) => s + volOf(r) * w[i], 0);
+  const projMin = mean(rs.slice(0, 5).map(volOf));
   const f = finite(oppFactor) && oppFactor > 0 ? oppFactor : 1;
   const mu = rate * projMin * f;
-  const perMin = rs.map((r) => statOf(r) / r.min);
-  const pm = mean(perMin);
-  const sdRate = Math.sqrt(perMin.reduce((s, v) => s + (v - pm) ** 2, 0) / Math.max(1, perMin.length - 1));
+  const perVol = rs.map((r) => statOf(r) / volOf(r));
+  const pm = mean(perVol);
+  const sdRate = Math.sqrt(perVol.reduce((s, v) => s + (v - pm) ** 2, 0) / Math.max(1, perVol.length - 1));
   const sd = Math.max(sdRate * projMin, Math.sqrt(Math.max(mu, 0.5)) * 1.1, 1);
   return { p: clamp(atLeast(threshold, mu, sd), 0.02, 0.98), mean: mu, projMin, rate, n: rs.length };
+}
+
+/**
+ * Second algorithm for markets with no opportunity stat (carries, pass attempts, outs): the last 5 games only,
+ * with a spread taken from the whole log. Disagrees with algorithm A exactly when recent form has moved.
+ */
+export function recentProp(values, threshold, oppFactor = 1) {
+  const xs = cleanValues(values);
+  if (xs.length < 3 || !finite(threshold)) return null;
+  const f = finite(oppFactor) && oppFactor > 0 ? oppFactor : 1;
+  const recent = xs.slice(0, 5), mu = mean(recent) * f, m = mean(xs);
+  const sd = Math.max(Math.sqrt(xs.reduce((s, v) => s + (v - m) ** 2, 0) / Math.max(1, xs.length - 1)), Math.sqrt(Math.max(mu, 0.5)), 1);
+  return { p: clamp(atLeast(threshold, mu, sd), 0.02, 0.98), mean: mu, n: recent.length };
 }
 
 /** Per-minute version of the double/triple-double: chance each category reaches 10, combined. */
@@ -331,6 +381,10 @@ export function gradeLeg(leg, result) {
   const forSide = (side) => (side === "home" ? hs - as : as - hs);
   switch (leg.kind) {
     case "ml": return !scored ? "pending" : forSide(leg.side) > 0 ? "win" : forSide(leg.side) < 0 ? "loss" : "push";
+    case "win": {                                           // tennis / esports: did the picked side win?
+      if (!result.winnerId) return result.draw ? "push" : "void";
+      return String(result.winnerId) === String(leg.pickId) ? "win" : "loss";
+    }
     case "spread": {
       if (!scored || !finite(leg.line)) return "pending";
       const v = forSide(leg.side) + leg.line;
@@ -396,7 +450,7 @@ export function trackerStats(bets) {
   const legs = all.flatMap((b) => b.legs).filter((l) => l && (l.result === "win" || l.result === "loss"));
   const byKind = {};
   for (const l of legs) {
-    const k = l.kind === "prop" ? "Player props" : l.kind === "ml" ? "Moneyline" : l.kind === "spread" ? "Spread" : l.kind === "total" ? "Totals" : "Double/Triple-double";
+    const k = l.kind === "prop" ? "Player props" : l.kind === "ml" ? "Moneyline" : l.kind === "spread" ? "Spread" : l.kind === "total" ? "Totals" : l.kind === "win" ? "Match winner" : "Double/Triple-double";
     byKind[k] = byKind[k] || { hits: 0, total: 0 };
     byKind[k].total++; if (l.result === "win") byKind[k].hits++;
   }
@@ -416,6 +470,7 @@ export function trackerStats(bets) {
     straight: { wins: count("straight", "win"), losses: count("straight", "loss") },
     legHits: legs.filter((l) => l.result === "win").length, legTotal: legs.length,
     byKind, buckets,
+    bySport: legs.reduce((m, l) => { const k = l.sport || "nba"; m[k] = m[k] || { hits: 0, total: 0 }; m[k].total++; if (l.result === "win") m[k].hits++; return m; }, {}),
     // Lower Brier score = sharper forecasts. Compares the two algorithms on the same graded legs.
     algo: { brierA: brier(legs, "pA"), brierB: brier(legs, "pB"), brierFinal: brier(legs, "pModel"), n: legs.filter((l) => finite(l.pA) && finite(l.pB)).length,
       verifiedHit: rate(legs.filter((l) => l.verified)), splitHit: rate(legs.filter((l) => l.verified === false)),

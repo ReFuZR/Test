@@ -1,0 +1,56 @@
+# Publishes the app to GitHub Pages and refreshes esports data every 30 minutes.
+# Setup (once): Settings > Pages > Source: "GitHub Actions";
+#               Settings > Secrets and variables > Actions > New secret PANDASCORE_TOKEN = your PandaScore key.
+name: Build and publish
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,37 * * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Unit tests
+        run: node --test test/model.test.js test/edge.test.js test/sports.test.js
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build esports data
+        env:
+          PANDASCORE_TOKEN: ${{ secrets.PANDASCORE_TOKEN }}
+        run: node scripts/esports.mjs
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r index.html styles.css sw.js manifest.webmanifest .nojekyll js icons data _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
