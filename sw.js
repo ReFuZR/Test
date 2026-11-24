@@ -1,5 +1,5 @@
 // Caches the app shell so it opens instantly from the home screen. ESPN data is always fetched live.
-const CACHE = "courtside-v1";
+const CACHE = "courtside-v2";
 const SHELL = ["./", "index.html", "styles.css", "js/app.js", "js/data.js", "js/model.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });

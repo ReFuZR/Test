@@ -20,18 +20,29 @@ It then opens full-screen like a normal app. There's no server and no account; i
 | Tab | What it does |
 |---|---|
 | **Games** | Every game with DraftKings moneyline, spread and total, the model's % for each side, a projected score, and each team's injuries with an estimated point impact. Tap a price to add it to your slip. |
-| **Props** | Player prop ladders (Points, Rebounds, Assists, 3-Pointers, combos like PRA, double-doubles), each with the model %, the book's %, last-10 / season hit rates, and a last-10 bar chart. Sort by *Most likely* or *Best vs. book*. |
+| **Props** | Player prop ladders (Points, Rebounds, Assists, 3-Pointers, combos like PRA, double-doubles), each with the model %, the book's %, last-10 / season hit rates, and a last-10 bar chart. Each pick shows ✓ Verified or Split. Sort by *Likely*, *Verified* or *Vs book*. |
 | **Slip** | Your legs, editable odds (match your book's price), and **Parlay vs Straights**: payout, hit chance and expected value for each. **Auto-parlay** scans the whole slate and builds the most likely 2-5 leg parlays that still pay at least +100 (Safer), +250 (Balanced) or +600 (Long shot). |
 | **Tracker** | Bets you saved, graded automatically from ESPN box scores: record, profit, ROI, leg hit rate, parlays vs straights, hit rate by bet type, and an **"Is the model honest?"** table comparing predicted % with how often legs actually hit. Back up / Restore saves your history to a file. |
 | **Injuries** | The injury report (all teams or just today's slate) plus trades and roster moves. |
 
-## How the model works
+## How the model works: two algorithms that check each other
 
-**Game lines.** Each team's season point differential, shrunk toward average early in the season, plus 2.2 points for home court. It subtracts the estimated impact of injured players (based on their scoring and minutes, weighted Out 100% / Doubtful 80% / Questionable 40%) and turns the projected margin and total into win, cover and over/under probabilities. That estimate is then blended 40/60 with the sportsbook's no-vig line. The market already knows about rest, rotations and late news, so this keeps the numbers realistic.
+Every bet is scored by two independent algorithms that use different slices of the data:
 
-**Player props.** Recency-weighted averages from the player's game log (last season fills in when there are fewer than 8 games this season). Low-count stats use a Poisson distribution, the rest a normal distribution, mixed with actual hit rates over the season and last 10 games. Scoring props are adjusted for the opponent's points allowed. The result is blended 65/35 with the book's price. Players listed as Out are dropped.
+| | Season model (A) | Form model (B) |
+|---|---|---|
+| **Game lines** | Season point differential, shrunk toward average early in the season | Last 10 games, adjusted for opponent strength and home/away |
+| **Player props** | Recency-weighted game log, plus actual hit rates this season and over the last 10 | Per-minute production × the minutes he's playing *now* (catches role changes) |
+| **Injuries** | Charged by the share of the season the player has played | Charged by the share of the last 10 games he played |
 
-**Parlays.** Hit chance is the product of the legs' chances. That assumes the legs are independent, which isn't true for legs from the same game, so the app warns you about those.
+- **✓ Verified:** the two land within 8 percentage points of each other.
+- **Split:** they disagree, so treat the % with suspicion. By default Auto-parlay only uses Verified legs; there's a switch to allow Split legs.
+
+The final % averages A and B, then blends that with the sportsbook's no-vig price (60% market for game lines, 35% for props). The market already knows about rest, rotations and late news. Game-line injury impact uses scoring and minutes, weighted Out 100% / Doubtful 80% / Questionable 40%. Scoring props are adjusted for the opponent's points allowed. Players listed as Out are dropped.
+
+The **Tracker's Algorithm check** scores A, B and the final blend on your graded legs (Brier score; lower is sharper) and shows how often Verified legs hit versus Split legs. Over time you'll see which one to trust.
+
+**Parlays.** Hit chance is the product of the legs' chances. That assumes the legs are independent, which isn't true for legs from the same game, so the app warns you about those. **Auto-parlay double-checks its own search:** after an exhaustive search for the most likely combo, a second, independent greedy search runs on the same legs, and if it ever finds a likelier parlay, that one is shown instead.
 
 **Grading.** Moneyline, spread and total legs grade from the final score. Player legs grade from the box score. A player who doesn't play is voided, and that leg drops out of a parlay (the usual sportsbook rule).
 
@@ -43,7 +54,15 @@ js/app.js                 screens and interactions
 js/data.js                ESPN endpoints and parsers
 js/model.js               odds math, predictions, parlay builder, grading
 sw.js, manifest.webmanifest, icons/   home-screen install + offline shell
-test/                     unit tests (run: npm test) with real saved ESPN responses
+test/                     tests (run: npm test), using real saved ESPN responses
 ```
+
+## Tests
+
+`npm test` runs 90 tests (the browser ones need Playwright):
+
+- **model.test.js:** odds math, both algorithms, parlays, grading and parsers against real ESPN data.
+- **edge.test.js:** every bad input we could think of: invalid odds strings, empty and garbage ESPN responses, missing teams, negative or NaN stats, ties and pushes, DNPs, timeouts, offline with stale cache, HTTP errors. It also checks on 40 random slates that the parlay search is never beaten by the second search.
+- **e2e.test.js:** the real app in a phone-sized browser. ESPN down / offline / sending garbage, each feed failing on its own, no odds or props posted, hostile team names, started games, corrupted saved data, junk backup files, invalid odds and stakes, double-tapping save, rapid day switching, automatic grading and voids, and no sideways scrolling at 320px in light and dark mode.
 
 Your bets are stored only on your phone (browser storage). Use **Back up** in the Tracker now and then, especially before clearing browser data.
